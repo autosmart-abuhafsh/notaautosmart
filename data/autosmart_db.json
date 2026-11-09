@@ -1,0 +1,595 @@
+{
+  "USERS": [
+    {
+      "id": "USR-0001",
+      "name": "Administrator Autosmart",
+      "email": "admin@autosmart.id",
+      "password_hash": "42e7e9933dba5ee77284f3c4f65b93b9:c6247c342442d590bc90d722938c0e942b8dd62def1ae938cf2e31db13c3418b1fa326e8fb9e5d492141ea4b4472c09d3416a7f37a46419694ea909bb06b57fe",
+      "role": "Administrator",
+      "status": "Aktif",
+      "created_at": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "USR-0002",
+      "name": "Staf Administrasi & Billing",
+      "email": "staff@autosmart.id",
+      "password_hash": "795d67518ff3e40b4e335b713b83aa98:6058afaa4326836e10d8c0ed727493f9aca7b2151c51810082b50fbce57da601903a5c329f457bf51b90ba4d9c27ff435c4db100fbde074236ba532399fc7db2",
+      "role": "Staff",
+      "status": "Aktif",
+      "created_at": "2026-01-05T00:00:00.000Z"
+    }
+  ],
+  "CLIENTS": [
+    {
+      "id": "CLT-0001",
+      "client_name": "PT Nusantara Logistik Mandiri",
+      "contact_person": "Hendra Wijaya",
+      "phone": "081234567801",
+      "whatsapp": "6281234567801",
+      "email": "hendra@nusantaralogistik.co.id",
+      "address": "Jl. Jenderal Sudirman Kav. 45, Jakarta Selatan",
+      "notes": "Klien korporat layanan Business Dashboard & Maintenance.",
+      "created_at": "2026-09-01T09:00:00.000Z"
+    },
+    {
+      "id": "CLT-0002",
+      "client_name": "CV Al-Haramain Tour & Travel",
+      "contact_person": "H. Ahmad Fauzi",
+      "phone": "081398765402",
+      "whatsapp": "6281398765402",
+      "email": "info@alharamaintour.id",
+      "address": "Jl. KH. Ahmad Dahlan No. 28, Bandung",
+      "notes": "Pengembangan Website Travel & Umroh dengan pembayaran bertahap.",
+      "created_at": "2026-09-15T10:00:00.000Z"
+    },
+    {
+      "id": "CLT-0003",
+      "client_name": "PT Kreasi Ritel Indonesia",
+      "contact_person": "Rina Kusuma",
+      "phone": "081122334455",
+      "whatsapp": "6281122334455",
+      "email": "rina.kusuma@kreasiritel.id",
+      "address": "Kawasan Niaga Terpadu Blok B2, Surabaya",
+      "notes": "Proyek E-Commerce dan Sistem Otomatisasi Bisnis.",
+      "created_at": "2026-10-01T08:30:00.000Z"
+    },
+    {
+      "id": "CLT-0004",
+      "client_name": "Klinik Utama Medika Prima",
+      "contact_person": "dr. Farhan Pratama",
+      "phone": "081566778899",
+      "whatsapp": "6281566778899",
+      "email": "manajemen@medikaprima.co.id",
+      "address": "Jl. Diponegoro No. 112, Semarang",
+      "notes": "Pembuatan Website Company Profile dan Google Apps Script.",
+      "created_at": "2026-10-12T11:15:00.000Z"
+    }
+  ],
+  "SERVICES": [
+    {
+      "id": "SRV-0001",
+      "service_name": "Website Profesional Korporasi",
+      "category": "Website Profesional",
+      "description": "Pengembangan website bisnis profesional responsif dengan CMS kustom dan optimasi kecepatan.",
+      "unit": "Paket",
+      "price": 7500000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0002",
+      "service_name": "Landing Page Konversi Tinggi",
+      "category": "Landing Page",
+      "description": "Desain dan pembuatan landing page kampanye produk/layanan terintegrasi WhatsApp & analitik.",
+      "unit": "Halaman",
+      "price": 2500000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0003",
+      "service_name": "Website Company Profile Eksklusif",
+      "category": "Website Company Profile",
+      "description": "Website profil perusahaan multi-halaman untuk membangun kredibilitas korporat.",
+      "unit": "Paket",
+      "price": 5500000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0004",
+      "service_name": "Website E-Commerce & Katalog Transaksi",
+      "category": "Website E-Commerce",
+      "description": "Toko online lengkap dengan manajemen produk, keranjang belanja, dan kalkulasi pengiriman.",
+      "unit": "Paket",
+      "price": 12000000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0005",
+      "service_name": "Website Travel & Manajemen Umroh",
+      "category": "Website Travel & Umroh",
+      "description": "Portal pemesanan paket perjalanan wisata dan umroh dengan manajemen jadwal keberangkatan.",
+      "unit": "Paket",
+      "price": 14500000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0006",
+      "service_name": "Manajemen Kampanye Digital Marketing",
+      "category": "Digital Marketing",
+      "description": "Pengelolaan iklan digital terarah, optimasi konversi, dan laporan performa bulanan.",
+      "unit": "Bulan",
+      "price": 4000000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0007",
+      "service_name": "Google Apps Script Automation Suite",
+      "category": "Google Apps Script Application",
+      "description": "Pembuatan aplikasi otomatisasi alur kerja terintegrasi Google Workspace (Sheets, Docs, Drive, Gmail).",
+      "unit": "Sistem",
+      "price": 4500000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0008",
+      "service_name": "Executive Business Dashboard",
+      "category": "Business Dashboard",
+      "description": "Dashboard pemantauan KPI bisnis, penjualan, dan operasional secara real-time.",
+      "unit": "Sistem",
+      "price": 6500000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0009",
+      "service_name": "Custom CRM System & Pipeline",
+      "category": "CRM System",
+      "description": "Sistem pengelolaan pelanggan, tindak lanjut prospek, dan histori transaksi terpusat.",
+      "unit": "Sistem",
+      "price": 9500000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0010",
+      "service_name": "Custom Web Application",
+      "category": "Web Application",
+      "description": "Pengembangan aplikasi berbasis web sesuai proses bisnis spesifik perusahaan.",
+      "unit": "Proyek",
+      "price": 15000000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0011",
+      "service_name": "Sistem Otomatisasi Bisnis Terpadu",
+      "category": "Sistem Otomatisasi Bisnis",
+      "description": "Integrasi sistem operasional, pengingat otomatis, dan pembuatan dokumen dinamis.",
+      "unit": "Sistem",
+      "price": 8000000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0012",
+      "service_name": "Sistem Manajemen Keuangan & Kas",
+      "category": "Manajemen Keuangan",
+      "description": "Sistem pencatatan arus kas, piutang, invoice, dan pembukuan keuangan perusahaan.",
+      "unit": "Sistem",
+      "price": 7000000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0013",
+      "service_name": "Jasa Analisis & Pemodelan Keuangan",
+      "category": "Analisis Keuangan",
+      "description": "Penyusunan proyeksi keuangan, analisis profitabilitas, dan evaluasi efisiensi biaya.",
+      "unit": "Laporan",
+      "price": 5000000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0014",
+      "service_name": "Maintenance & Keamanan Website Tahunan",
+      "category": "Maintenance Website",
+      "description": "Pemeliharaan rutin server, backup berkala, pembaruan sistem, dan pemantauan keamanan.",
+      "unit": "Tahun",
+      "price": 3600000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0015",
+      "service_name": "Jasa Pengembangan Aplikasi Kustom",
+      "category": "Jasa Pengembangan Aplikasi",
+      "description": "Layanan rekayasa perangkat lunak end-to-end mulai dari perancangan hingga deployment.",
+      "unit": "Proyek",
+      "price": 18000000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    },
+    {
+      "id": "SRV-0016",
+      "service_name": "Konsultasi & Implementasi Layanan Digital",
+      "category": "Layanan Digital Lainnya",
+      "description": "Pendampingan transformasi digital dan pelatihan kolaborasi tim berbasis teknologi.",
+      "unit": "Sesi",
+      "price": 2000000,
+      "status": "Aktif",
+      "created_at": "2026-01-10T08:00:00.000Z"
+    }
+  ],
+  "INVOICES": [
+    {
+      "id": "INV-0001",
+      "invoice_number": "INV/ASM/2026/0001",
+      "client_id": "CLT-0001",
+      "issue_date": "2026-10-05",
+      "due_date": "2026-10-20",
+      "subtotal": 10100000,
+      "discount": 100000,
+      "additional_cost": 0,
+      "tax_rate": 0,
+      "tax_amount": 0,
+      "grand_total": 10000000,
+      "amount_paid": 10000000,
+      "balance": 0,
+      "status": "Paid",
+      "notes": "Pengembangan Executive Business Dashboard & Maintenance 1 Tahun.",
+      "created_at": "2026-10-05T09:00:00.000Z",
+      "updated_at": "2026-10-18T14:00:00.000Z"
+    },
+    {
+      "id": "INV-0002",
+      "invoice_number": "INV/ASM/2026/0002",
+      "client_id": "CLT-0002",
+      "issue_date": "2026-11-01",
+      "due_date": "2026-11-25",
+      "subtotal": 14500000,
+      "discount": 500000,
+      "additional_cost": 0,
+      "tax_rate": 0,
+      "tax_amount": 0,
+      "grand_total": 14000000,
+      "amount_paid": 7000000,
+      "balance": 7000000,
+      "status": "Partially Paid",
+      "notes": "Pembayaran Termin 1 (DP 50%) telah diterima. Pelunasan saat UAT selesai.",
+      "created_at": "2026-11-01T10:00:00.000Z",
+      "updated_at": "2026-11-02T15:30:00.000Z"
+    },
+    {
+      "id": "INV-0003",
+      "invoice_number": "INV/ASM/2026/0003",
+      "client_id": "CLT-0003",
+      "issue_date": "2026-10-10",
+      "due_date": "2026-10-28",
+      "subtotal": 8000000,
+      "discount": 0,
+      "additional_cost": 0,
+      "tax_rate": 0,
+      "tax_amount": 0,
+      "grand_total": 8000000,
+      "amount_paid": 0,
+      "balance": 8000000,
+      "status": "Overdue",
+      "notes": "Implementasi Sistem Otomatisasi Bisnis Terpadu.",
+      "created_at": "2026-10-10T08:00:00.000Z",
+      "updated_at": "2026-10-10T08:00:00.000Z"
+    },
+    {
+      "id": "INV-0004",
+      "invoice_number": "INV/ASM/2026/0004",
+      "client_id": "CLT-0004",
+      "issue_date": "2026-11-05",
+      "due_date": "2026-11-20",
+      "subtotal": 10000000,
+      "discount": 0,
+      "additional_cost": 0,
+      "tax_rate": 0,
+      "tax_amount": 0,
+      "grand_total": 10000000,
+      "amount_paid": 0,
+      "balance": 10000000,
+      "status": "Unpaid",
+      "notes": "Pembuatan Website Company Profile Eksklusif & Google Apps Script Automation.",
+      "created_at": "2026-11-05T11:00:00.000Z",
+      "updated_at": "2026-11-05T11:00:00.000Z"
+    }
+  ],
+  "INVOICE_ITEMS": [
+    {
+      "id": "ITM-0001",
+      "invoice_id": "INV-0001",
+      "service_id": "SRV-0008",
+      "description": "Executive Business Dashboard - Modul Analitik & Operasional",
+      "quantity": 1,
+      "unit": "Sistem",
+      "unit_price": 6500000,
+      "discount": 0,
+      "total": 6500000
+    },
+    {
+      "id": "ITM-0002",
+      "invoice_id": "INV-0001",
+      "service_id": "SRV-0014",
+      "description": "Maintenance & Keamanan Website Tahunan",
+      "quantity": 1,
+      "unit": "Tahun",
+      "unit_price": 3600000,
+      "discount": 0,
+      "total": 3600000
+    },
+    {
+      "id": "ITM-0003",
+      "invoice_id": "INV-0002",
+      "service_id": "SRV-0005",
+      "description": "Website Travel & Manajemen Umroh Terintegrasi",
+      "quantity": 1,
+      "unit": "Paket",
+      "unit_price": 14500000,
+      "discount": 0,
+      "total": 14500000
+    },
+    {
+      "id": "ITM-0004",
+      "invoice_id": "INV-0003",
+      "service_id": "SRV-0011",
+      "description": "Sistem Otomatisasi Bisnis Terpadu",
+      "quantity": 1,
+      "unit": "Sistem",
+      "unit_price": 8000000,
+      "discount": 0,
+      "total": 8000000
+    },
+    {
+      "id": "ITM-0005",
+      "invoice_id": "INV-0004",
+      "service_id": "SRV-0003",
+      "description": "Website Company Profile Eksklusif",
+      "quantity": 1,
+      "unit": "Paket",
+      "unit_price": 5500000,
+      "discount": 0,
+      "total": 5500000
+    },
+    {
+      "id": "ITM-0006",
+      "invoice_id": "INV-0004",
+      "service_id": "SRV-0007",
+      "description": "Google Apps Script Automation Suite",
+      "quantity": 1,
+      "unit": "Sistem",
+      "unit_price": 4500000,
+      "discount": 0,
+      "total": 4500000
+    }
+  ],
+  "PAYMENTS": [
+    {
+      "id": "PAY-0001",
+      "receipt_number": "KW/ASM/2026/0001",
+      "invoice_id": "INV-0001",
+      "payment_date": "2026-10-06",
+      "amount": 5000000,
+      "payment_method": "Transfer Bank",
+      "reference_number": "TRF-20261006-01",
+      "notes": "Pembayaran DP 50% Proyek Executive Business Dashboard",
+      "created_at": "2026-10-06T10:15:00.000Z"
+    },
+    {
+      "id": "PAY-0002",
+      "receipt_number": "KW/ASM/2026/0002",
+      "invoice_id": "INV-0001",
+      "payment_date": "2026-10-18",
+      "amount": 5000000,
+      "payment_method": "Transfer Bank",
+      "reference_number": "TRF-20261018-09",
+      "notes": "Pelunasan 100% Proyek Executive Business Dashboard",
+      "created_at": "2026-10-18T14:00:00.000Z"
+    },
+    {
+      "id": "PAY-0003",
+      "receipt_number": "KW/ASM/2026/0003",
+      "invoice_id": "INV-0002",
+      "payment_date": "2026-11-02",
+      "amount": 7000000,
+      "payment_method": "Transfer Bank",
+      "reference_number": "TRF-20261102-04",
+      "notes": "Down Payment (DP 50%) Website Travel & Manajemen Umroh",
+      "created_at": "2026-11-02T15:30:00.000Z"
+    }
+  ],
+  "COMPANY_SETTINGS": [
+    {
+      "id": "SET-001",
+      "setting_key": "company_name",
+      "setting_value": "Autosmart Digital Solutions",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-002",
+      "setting_key": "tagline",
+      "setting_value": "Skill Up For Digital Collaboration",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-003",
+      "setting_key": "business_field",
+      "setting_value": "Digital Learning & Business Solution",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-004",
+      "setting_key": "address",
+      "setting_value": "",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-005",
+      "setting_key": "whatsapp",
+      "setting_value": "",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-006",
+      "setting_key": "email",
+      "setting_value": "",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-007",
+      "setting_key": "website",
+      "setting_value": "",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-008",
+      "setting_key": "logo_url",
+      "setting_value": "",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-009",
+      "setting_key": "bank_name",
+      "setting_value": "",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-010",
+      "setting_key": "bank_account_name",
+      "setting_value": "",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-011",
+      "setting_key": "bank_account_number",
+      "setting_value": "",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-012",
+      "setting_key": "qris_url",
+      "setting_value": "",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-013",
+      "setting_key": "invoice_prefix",
+      "setting_value": "INV/ASM",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-014",
+      "setting_key": "receipt_prefix",
+      "setting_value": "KW/ASM",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-015",
+      "setting_key": "document_year",
+      "setting_value": "2026",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-016",
+      "setting_key": "footer_note",
+      "setting_value": "Terima kasih telah mempercayakan kebutuhan digital bisnis Anda kepada Autosmart Digital Solutions.",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-017",
+      "setting_key": "terms_and_conditions",
+      "setting_value": "Pembayaran dilakukan sesuai jatuh tempo yang tertera pada invoice. Bukti pembayaran sah diterbitkan oleh sistem Autosmart Invoice.",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-018",
+      "setting_key": "tax_enabled",
+      "setting_value": "false",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-019",
+      "setting_key": "tax_rate",
+      "setting_value": "11",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-020",
+      "setting_key": "currency",
+      "setting_value": "IDR",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-021",
+      "setting_key": "date_format",
+      "setting_value": "DD MMMM YYYY",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-022",
+      "setting_key": "signatory_name",
+      "setting_value": "Administrator Autosmart",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    },
+    {
+      "id": "SET-023",
+      "setting_key": "signatory_role",
+      "setting_value": "Finance & Administration",
+      "updated_at": "2026-11-09T04:45:58.359Z"
+    }
+  ],
+  "ACTIVITY_LOGS": [
+    {
+      "id": "LOG-0006-7709",
+      "user_id": "USR-0001",
+      "activity": "USER_LOGIN",
+      "description": "Administrator Autosmart (Administrator) masuk ke sistem.",
+      "timestamp": "2026-11-09T09:29:07.709Z"
+    },
+    {
+      "id": "LOG-0005-5175",
+      "user_id": "USR-0001",
+      "activity": "USER_LOGIN",
+      "description": "Administrator Autosmart (Administrator) masuk ke sistem.",
+      "timestamp": "2026-11-09T09:28:35.175Z"
+    },
+    {
+      "id": "LOG-0001",
+      "user_id": "USR-0001",
+      "activity": "CREATE_INVOICE",
+      "description": "Menerbitkan invoice INV/ASM/2026/0001 untuk PT Nusantara Logistik Mandiri",
+      "timestamp": "2026-10-05T09:00:00.000Z"
+    },
+    {
+      "id": "LOG-0002",
+      "user_id": "USR-0001",
+      "activity": "RECORD_PAYMENT",
+      "description": "Mencatat pembayaran KW/ASM/2026/0002 sebesar Rp 5.000.000 (Lunas)",
+      "timestamp": "2026-10-18T14:00:00.000Z"
+    },
+    {
+      "id": "LOG-0003",
+      "user_id": "USR-0002",
+      "activity": "RECORD_PAYMENT",
+      "description": "Mencatat pembayaran DP KW/ASM/2026/0003 sebesar Rp 7.000.000 untuk INV/ASM/2026/0002",
+      "timestamp": "2026-11-02T15:30:00.000Z"
+    },
+    {
+      "id": "LOG-0004",
+      "user_id": "USR-0002",
+      "activity": "CREATE_INVOICE",
+      "description": "Menerbitkan invoice INV/ASM/2026/0004 untuk Klinik Utama Medika Prima",
+      "timestamp": "2026-11-05T11:00:00.000Z"
+    }
+  ]
+}

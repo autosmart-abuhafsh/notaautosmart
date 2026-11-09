@@ -1,0 +1,6 @@
+{
+  "name": "Autosmart Invoice",
+  "description": "Sistem Manajemen Invoice, Nota Transaksi, dan Pembayaran untuk Autosmart Digital Solutions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
