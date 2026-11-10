@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Lock, Mail, ArrowRight, ShieldCheck, UserCheck } from 'lucide-react';
 import { BrandLogo } from './BrandLogo';
 import type { User } from '../types/invoice';
+import { authenticateLocalUser } from '../utils/clientFallbackEngine';
 
 interface LoginViewProps {
   onLoginSuccess: (token: string, user: User) => void;
@@ -28,14 +29,31 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: email.trim(), password }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || 'Gagal masuk ke sistem.');
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data.error || 'Gagal masuk ke sistem.');
+        } else {
+          onLoginSuccess(data.token, data.user);
+        }
+        return;
+      }
+      // Fallback if server returned non-JSON (e.g., static Vercel deployment)
+      const fallback = authenticateLocalUser(email.trim(), password);
+      if ('error' in fallback) {
+        setError(fallback.error);
       } else {
-        onLoginSuccess(data.token, data.user);
+        onLoginSuccess(fallback.token, fallback.user);
       }
     } catch {
-      setError('Tidak dapat terhubung ke server autentikasi.');
+      // Fallback when backend server is unreachable or cold-starting
+      const fallback = authenticateLocalUser(email.trim(), password);
+      if ('error' in fallback) {
+        setError(fallback.error);
+      } else {
+        onLoginSuccess(fallback.token, fallback.user);
+      }
     } finally {
       setLoading(false);
     }

@@ -27,6 +27,12 @@ import type {
   ServiceItem,
   User,
 } from './types/invoice';
+import {
+  handleClientFallbackApi,
+  loadLocalGasConfig,
+  mirrorBootstrapToLocalDb,
+  saveLocalGasConfig,
+} from './utils/clientFallbackEngine';
 
 const DEFAULT_SETTINGS: CompanySettingsMap = {
   company_name: 'Autosmart Digital Solutions',
@@ -136,17 +142,33 @@ export default function App() {
         headers.Authorization = `Bearer ${activeToken}`;
       }
 
-      const res = await fetch(url, { ...options, headers });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (res.status === 401) {
-          localStorage.removeItem('autosmart_token');
-          setToken(null);
-          setCurrentUser(null);
+      try {
+        const res = await fetch(url, { ...options, headers });
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            if (res.status === 401) {
+              return await handleClientFallbackApi(url, options, activeToken);
+            }
+            throw new Error(data.error || `Permintaan gagal (${res.status})`);
+          }
+          return data;
         }
-        throw new Error(data.error || `Permintaan gagal (${res.status})`);
+        // Server returned non-JSON (e.g. static deployment): use client fallback engine
+        return await handleClientFallbackApi(url, options, activeToken);
+      } catch (err) {
+        // Network error or cold-start failure: use client fallback engine
+        if (
+          err instanceof Error &&
+          !err.message.includes('Failed to fetch') &&
+          !err.message.includes('NetworkError') &&
+          !err.message.includes('Load failed')
+        ) {
+          throw err;
+        }
+        return await handleClientFallbackApi(url, options, activeToken);
       }
-      return data;
     },
     [token]
   );
@@ -155,10 +177,20 @@ export default function App() {
     if (!token) return;
     setLoadingBootstrap(true);
     try {
-      const meRes = await apiRequest('/api/auth/me');
+      const meRes = (await apiRequest('/api/auth/me')) as { user: User };
       setCurrentUser(meRes.user);
 
-      const boot = await apiRequest('/api/bootstrap');
+      const boot = (await apiRequest('/api/bootstrap')) as {
+        clients?: Client[];
+        services?: ServiceItem[];
+        invoices?: Invoice[];
+        payments?: Payment[];
+        settings?: CompanySettingsMap;
+        users?: User[];
+        activityLogs?: ActivityLog[];
+        databaseStatus?: DatabaseStatus;
+      };
+      mirrorBootstrapToLocalDb(boot);
       setClients(boot.clients || []);
       setServices(boot.services || []);
       setInvoices(boot.invoices || []);
@@ -356,6 +388,12 @@ export default function App() {
     webAppUrl: string,
     apiSecret: string
   ) => {
+    const existingCfg = loadLocalGasConfig();
+    saveLocalGasConfig({
+      webAppUrl: webAppUrl.trim(),
+      apiSecret: apiSecret.trim(),
+      lastSync: existingCfg.lastSync,
+    });
     const res = await apiRequest('/api/database/config', {
       method: 'POST',
       body: JSON.stringify({ webAppUrl, apiSecret }),
@@ -363,13 +401,36 @@ export default function App() {
     if (res.databaseStatus) {
       setDatabaseStatus(res.databaseStatus);
     }
-    showToast('Konfigurasi koneksi Google Apps Script berhasil disimpan.');
+    await loadBootstrapData();
+    showToast(
+      res.autoSynced
+        ? 'Terhubung! Data nota & invoice berhasil disinkronkan ke Google Sheets.'
+        : 'Konfigurasi koneksi Google Apps Script berhasil disimpan.'
+    );
   };
 
   const handleTriggerDatabaseSync = async () => {
     await apiRequest('/api/database/sync', { method: 'POST' });
     await loadBootstrapData();
-    showToast('Sinkronisasi ke Google Sheets berhasil.');
+    showToast('Sinkronisasi (Push) seluruh nota ke Google Sheets berhasil.');
+  };
+
+  const handlePullDatabaseFromGas = async () => {
+    await apiRequest('/api/database/pull', { method: 'POST' });
+    await loadBootstrapData();
+    showToast(
+      'Data nota, invoice, pembayaran, dan klien berhasil ditarik dari Google Sheets.'
+    );
+  };
+
+  const handleTestDatabaseConnection = async (
+    webAppUrl: string,
+    apiSecret: string
+  ) => {
+    return apiRequest('/api/database/test', {
+      method: 'POST',
+      body: JSON.stringify({ webAppUrl, apiSecret }),
+    });
   };
 
   // Unauthenticated View
@@ -541,6 +602,8 @@ export default function App() {
               onUpdateUser={handleUpdateUser}
               onSaveDatabaseConfig={handleSaveDatabaseConfig}
               onTriggerDatabaseSync={handleTriggerDatabaseSync}
+              onPullDatabaseFromGas={handlePullDatabaseFromGas}
+              onTestDatabaseConnection={handleTestDatabaseConnection}
             />
           )}
         </main>

@@ -260,7 +260,8 @@ interface GasConfig {
 }
 
 function loadGasConfig(): GasConfig {
-  const envUrl = process.env.GAS_WEB_APP_URL || '';
+  const envUrl =
+    process.env.GAS_WEB_APP_URL || process.env.VITE_GAS_WEB_APP_URL || '';
   const envSecret = process.env.GAS_API_SECRET || '';
   if (fs.existsSync(GAS_CONFIG_FILE)) {
     try {
@@ -2025,22 +2026,118 @@ app.post('/api/auth/login', async (req, res) => {
       );
       writeDb(db);
 
+      // Jika URL Web App diisi, langsung coba sinkronisasi awal ke Google Sheets
+      let autoSyncResult: { synced: boolean; error?: string } = {
+        synced: false,
+      };
+      if (cleanUrl) {
+        autoSyncResult = await syncWithGasIfConfigured(db);
+      }
+
+      const refreshedCfg = loadGasConfig();
+
       res.json({
         ok: true,
+        autoSynced: autoSyncResult.synced,
+        autoSyncError: autoSyncResult.error,
         databaseStatus: {
-          mode: cfg.webAppUrl ? 'GOOGLE_SHEETS' : 'DEMO_LOCAL',
-          connected: Boolean(cfg.webAppUrl),
+          mode: refreshedCfg.webAppUrl ? 'GOOGLE_SHEETS' : 'DEMO_LOCAL',
+          connected: Boolean(refreshedCfg.webAppUrl),
           spreadsheet_name: 'AUTOSMART_INVOICE_DATABASE',
-          gas_url_configured: Boolean(cfg.webAppUrl),
-          gas_url_masked: cfg.webAppUrl
-            ? `${cfg.webAppUrl.slice(0, 38)}...`
+          gas_url_configured: Boolean(refreshedCfg.webAppUrl),
+          gas_url_masked: refreshedCfg.webAppUrl
+            ? `${refreshedCfg.webAppUrl.slice(0, 42)}...`
             : '',
-          last_sync: cfg.lastSync,
-          message: cfg.webAppUrl
+          last_sync: refreshedCfg.lastSync,
+          message: refreshedCfg.webAppUrl
             ? 'Terhubung ke Google Sheets melalui Google Apps Script Proxy'
             : 'Mode DEMO / Database Persisten Lokal Aktif',
         },
       });
+    }
+  );
+
+  app.post(
+    '/api/database/test',
+    requireAuth,
+    requireAdmin,
+    async (req, res) => {
+      const cfg = loadGasConfig();
+      const targetUrl = String(req.body?.webAppUrl || cfg.webAppUrl || '').trim();
+      const targetSecret =
+        req.body?.apiSecret !== undefined
+          ? String(req.body.apiSecret).trim()
+          : cfg.apiSecret;
+
+      if (!targetUrl) {
+        res.status(400).json({
+          error:
+            'Masukkan URL Web App Google Apps Script (https://script.google.com/macros/s/.../exec) terlebih dahulu.',
+        });
+        return;
+      }
+
+      if (!targetUrl.startsWith('https://script.google.com/')) {
+        res.status(400).json({
+          error:
+            'URL Web App harus diawali dengan https://script.google.com/...',
+        });
+        return;
+      }
+
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        const gasRes = await fetch(targetUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'ping',
+            secret: targetSecret,
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        if (!gasRes.ok) {
+          res.status(502).json({
+            error: `Server Apps Script merespons HTTP ${gasRes.status}. Pastikan akses Web App disetel ke "Anyone / Siapa saja".`,
+          });
+          return;
+        }
+
+        const data = (await gasRes.json()) as {
+          ok?: boolean;
+          error?: string;
+          spreadsheetName?: string;
+          spreadsheetId?: string;
+          spreadsheetUrl?: string;
+          counts?: Record<string, number>;
+          serverTime?: string;
+        };
+
+        if (!data || !data.ok) {
+          res.status(400).json({
+            error:
+              data?.error ||
+              'Respons dari Google Apps Script tidak valid. Pastikan Code.gs dan Setup.gs sudah dipasang.',
+          });
+          return;
+        }
+
+        res.json({
+          ok: true,
+          spreadsheetName: data.spreadsheetName || 'AUTOSMART_INVOICE_DATABASE',
+          spreadsheetId: data.spreadsheetId || '',
+          spreadsheetUrl: data.spreadsheetUrl || '',
+          counts: data.counts || {},
+          serverTime: data.serverTime || '',
+        });
+      } catch (err) {
+        res.status(502).json({
+          error: `Gagal menghubungi URL Google Apps Script: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
     }
   );
 
@@ -2084,6 +2181,182 @@ app.post('/api/auth/login', async (req, res) => {
     }
   );
 
+  app.post(
+    '/api/database/pull',
+    requireAuth,
+    requireAdmin,
+    async (req, res) => {
+      const admin = (req as express.Request & { user: DbUser }).user;
+      const cfg = loadGasConfig();
+
+      if (!cfg.webAppUrl) {
+        res.status(400).json({
+          error:
+            'URL Google Apps Script belum dikonfigurasi. Silakan simpan URL Web App terlebih dahulu.',
+        });
+        return;
+      }
+
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        const gasRes = await fetch(cfg.webAppUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'exportAll',
+            secret: cfg.apiSecret,
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        if (!gasRes.ok) {
+          res.status(502).json({
+            error: `Gagal menarik data dari Google Sheets (HTTP ${gasRes.status}).`,
+          });
+          return;
+        }
+
+        const payload = (await gasRes.json()) as {
+          ok?: boolean;
+          error?: string;
+          data?: Partial<Record<keyof AutosmartDatabase, Array<Record<string, unknown>>>>;
+        };
+
+        if (!payload?.ok || !payload.data) {
+          res.status(400).json({
+            error:
+              payload?.error ||
+              'Data dari Google Sheets kosong atau format tidak sesuai.',
+          });
+          return;
+        }
+
+        const remote = payload.data;
+        await withLock(async () => {
+          const currentDb = readDb();
+
+          if (Array.isArray(remote.CLIENTS) && remote.CLIENTS.length > 0) {
+            currentDb.CLIENTS = remote.CLIENTS.map((c) => ({
+              id: String(c.id || ''),
+              client_name: String(c.client_name || ''),
+              contact_person: String(c.contact_person || ''),
+              phone: String(c.phone || ''),
+              whatsapp: String(c.whatsapp || ''),
+              email: String(c.email || ''),
+              address: String(c.address || ''),
+              notes: String(c.notes || ''),
+              created_at: String(c.created_at || getJakartaTimestamp()),
+            }));
+          }
+
+          if (Array.isArray(remote.SERVICES) && remote.SERVICES.length > 0) {
+            currentDb.SERVICES = remote.SERVICES.map((s) => ({
+              id: String(s.id || ''),
+              service_name: String(s.service_name || ''),
+              category: String(s.category || 'Layanan Digital Lainnya'),
+              description: String(s.description || ''),
+              unit: String(s.unit || 'Paket'),
+              price: Math.round(Number(s.price) || 0),
+              status: s.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
+              created_at: String(s.created_at || getJakartaTimestamp()),
+            }));
+          }
+
+          if (Array.isArray(remote.INVOICES) && remote.INVOICES.length > 0) {
+            currentDb.INVOICES = remote.INVOICES.map((inv) => ({
+              id: String(inv.id || ''),
+              invoice_number: String(inv.invoice_number || ''),
+              client_id: String(inv.client_id || ''),
+              issue_date: String(inv.issue_date || getJakartaDateStr()),
+              due_date: String(inv.due_date || getJakartaDateStr()),
+              subtotal: Math.round(Number(inv.subtotal) || 0),
+              discount: Math.round(Number(inv.discount) || 0),
+              additional_cost: Math.round(Number(inv.additional_cost) || 0),
+              tax_rate: Number(inv.tax_rate) || 0,
+              tax_amount: Math.round(Number(inv.tax_amount) || 0),
+              grand_total: Math.round(Number(inv.grand_total) || 0),
+              amount_paid: Math.round(Number(inv.amount_paid) || 0),
+              balance: Math.round(Number(inv.balance) || 0),
+              status: (inv.status as DbInvoice['status']) || 'Unpaid',
+              notes: String(inv.notes || ''),
+              created_at: String(inv.created_at || getJakartaTimestamp()),
+              updated_at: String(inv.updated_at || getJakartaTimestamp()),
+            }));
+          }
+
+          if (
+            Array.isArray(remote.INVOICE_ITEMS) &&
+            remote.INVOICE_ITEMS.length > 0
+          ) {
+            currentDb.INVOICE_ITEMS = remote.INVOICE_ITEMS.map((it) => ({
+              id: String(it.id || ''),
+              invoice_id: String(it.invoice_id || ''),
+              service_id: String(it.service_id || ''),
+              description: String(it.description || ''),
+              quantity: Number(it.quantity) || 1,
+              unit: String(it.unit || 'Paket'),
+              unit_price: Math.round(Number(it.unit_price) || 0),
+              discount: Math.round(Number(it.discount) || 0),
+              total: Math.round(Number(it.total) || 0),
+            }));
+          }
+
+          if (Array.isArray(remote.PAYMENTS)) {
+            currentDb.PAYMENTS = remote.PAYMENTS.map((p) => ({
+              id: String(p.id || ''),
+              receipt_number: String(p.receipt_number || ''),
+              invoice_id: String(p.invoice_id || ''),
+              payment_date: String(p.payment_date || getJakartaDateStr()),
+              amount: Math.round(Number(p.amount) || 0),
+              payment_method:
+                (p.payment_method as DbPayment['payment_method']) ||
+                'Transfer Bank',
+              reference_number: String(p.reference_number || ''),
+              notes: String(p.notes || ''),
+              created_at: String(p.created_at || getJakartaTimestamp()),
+            }));
+          }
+
+          if (
+            Array.isArray(remote.COMPANY_SETTINGS) &&
+            remote.COMPANY_SETTINGS.length > 0
+          ) {
+            currentDb.COMPANY_SETTINGS = remote.COMPANY_SETTINGS.map(
+              (s, idx) => ({
+                id: String(s.id || `SET-0${idx + 1}`),
+                setting_key: String(s.setting_key || ''),
+                setting_value: String(s.setting_value ?? ''),
+                updated_at: String(s.updated_at || getJakartaTimestamp()),
+              })
+            );
+          }
+
+          logActivity(
+            currentDb,
+            admin.id,
+            'PULL_DATABASE',
+            'Menarik data nota, invoice, pembayaran, dan klien dari Google Sheets (AUTOSMART_INVOICE_DATABASE)'
+          );
+          writeDb(currentDb);
+
+          cfg.lastSync = getJakartaTimestamp();
+          saveGasConfig(cfg);
+        });
+
+        res.json({
+          ok: true,
+          last_sync: loadGasConfig().lastSync,
+        });
+      } catch (err) {
+        res.status(502).json({
+          error: `Gagal menarik data dari Google Apps Script: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+  );
+
   app.get(
     '/api/database/backup',
     requireAuth,
@@ -2106,9 +2379,14 @@ app.post('/api/auth/login', async (req, res) => {
 // --- VITE DEV MIDDLEWARE / STATIC PROD SERVING ---
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
+    const vitePkg = 'vite';
+    const { createServer: createViteServer } = await import(vitePkg);
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        watch: null,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

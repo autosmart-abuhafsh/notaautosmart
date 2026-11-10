@@ -550,6 +550,20 @@
   ],
   "ACTIVITY_LOGS": [
     {
+      "id": "LOG-0008-6195",
+      "user_id": "USR-0001",
+      "activity": "USER_LOGIN",
+      "description": "Administrator Autosmart (Administrator) masuk ke sistem.",
+      "timestamp": "2026-11-10T08:12:06.195Z"
+    },
+    {
+      "id": "LOG-0007-0312",
+      "user_id": "USR-0001",
+      "activity": "USER_LOGIN",
+      "description": "Administrator Autosmart (Administrator) masuk ke sistem.",
+      "timestamp": "2026-11-10T08:02:20.312Z"
+    },
+    {
       "id": "LOG-0006-7709",
       "user_id": "USR-0001",
       "activity": "USER_LOGIN",
