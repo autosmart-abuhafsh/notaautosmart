@@ -37,6 +37,7 @@ interface SidebarProps {
   onLogout: () => void;
   mobileOpen: boolean;
   onCloseMobile: () => void;
+  onToggleDemoMode: (enabled: boolean) => Promise<void>;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -48,7 +49,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onLogout,
   mobileOpen,
   onCloseMobile,
+  onToggleDemoMode,
 }) => {
+  const isDemoActive =
+    databaseStatus.demo_mode !== false &&
+    databaseStatus.mode !== 'LIVE_LOCAL';
   const navItems: Array<{
     id: NavTab;
     label: string;
@@ -153,23 +158,59 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* Bottom Database Status & User Profile */}
         <div className="p-4 border-t border-white/10 space-y-3">
-          <button
-            type="button"
-            onClick={() => handleNavClick('database')}
-            className="w-full text-left p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-colors border border-white/10 cursor-pointer"
-          >
-            <div className="flex items-center justify-between text-xs font-semibold text-white mb-0.5">
-              <span>Status Database</span>
-              <span className="text-[#C5A15B]">
-                {databaseStatus.mode === 'GOOGLE_SHEETS' ? 'SHEETS' : 'DEMO'}
+          <div className="p-3 rounded-lg bg-white/5 border border-white/10 space-y-2">
+            <button
+              type="button"
+              onClick={() => handleNavClick('database')}
+              className="w-full text-left cursor-pointer"
+            >
+              <div className="flex items-center justify-between text-xs font-semibold text-white mb-0.5">
+                <span>Status Database</span>
+                <span
+                  className={
+                    databaseStatus.mode === 'GOOGLE_SHEETS'
+                      ? 'text-emerald-400'
+                      : isDemoActive
+                        ? 'text-[#C5A15B]'
+                        : 'text-emerald-400'
+                  }
+                >
+                  {databaseStatus.mode === 'GOOGLE_SHEETS'
+                    ? 'SHEETS'
+                    : isDemoActive
+                      ? 'DEMO: ON'
+                      : 'FRESH / BERSIH'}
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-300 truncate">
+                {databaseStatus.mode === 'GOOGLE_SHEETS'
+                  ? 'Google Sheets Terhubung'
+                  : isDemoActive
+                    ? 'Menampilkan Data Simulasi Demo'
+                    : 'Mode Data Bersih (Demo OFF)'}
+              </div>
+            </button>
+
+            <button
+              type="button"
+              data-testid="sidebar-toggle-demo-btn"
+              onClick={() => onToggleDemoMode(!isDemoActive)}
+              className={`w-full py-1.5 px-2.5 rounded-md text-[11px] font-semibold transition-colors cursor-pointer flex items-center justify-between ${
+                isDemoActive
+                  ? 'bg-[#800020] hover:bg-[#660019] text-white'
+                  : 'bg-emerald-800/70 hover:bg-emerald-700 text-emerald-100'
+              }`}
+            >
+              <span>
+                {isDemoActive
+                  ? 'Matikan Mode Demo'
+                  : 'Hidupkan Mode Demo'}
               </span>
-            </div>
-            <div className="text-[11px] text-slate-300 truncate">
-              {databaseStatus.mode === 'GOOGLE_SHEETS'
-                ? 'Google Sheets Terhubung'
-                : 'Mode DEMO Persisten Aktif'}
-            </div>
-          </button>
+              <span className="font-mono text-[10px] opacity-90">
+                {isDemoActive ? 'BERSIHKAN' : 'SIMULASI'}
+              </span>
+            </button>
+          </div>
 
           <div className="flex items-center justify-between gap-2 pt-1">
             <div className="min-w-0">

@@ -550,6 +550,20 @@
   ],
   "ACTIVITY_LOGS": [
     {
+      "id": "LOG-0006-3990",
+      "user_id": "USR-0001",
+      "activity": "TOGGLE_DEMO_MODE",
+      "description": "Mode Demo dihidupkan kembali — Menampilkan data contoh simulasi.",
+      "timestamp": "2026-11-10T09:03:53.990Z"
+    },
+    {
+      "id": "LOG-0005-0587",
+      "user_id": "USR-0001",
+      "activity": "TOGGLE_DEMO_MODE",
+      "description": "Mode Demo dimatikan — Database kini dalam kondisi bersih (Fresh / Live).",
+      "timestamp": "2026-11-10T09:03:50.587Z"
+    },
+    {
       "id": "LOG-0008-6195",
       "user_id": "USR-0001",
       "activity": "USER_LOGIN",
@@ -576,34 +590,6 @@
       "activity": "USER_LOGIN",
       "description": "Administrator Autosmart (Administrator) masuk ke sistem.",
       "timestamp": "2026-11-09T09:28:35.175Z"
-    },
-    {
-      "id": "LOG-0001",
-      "user_id": "USR-0001",
-      "activity": "CREATE_INVOICE",
-      "description": "Menerbitkan invoice INV/ASM/2026/0001 untuk PT Nusantara Logistik Mandiri",
-      "timestamp": "2026-10-05T09:00:00.000Z"
-    },
-    {
-      "id": "LOG-0002",
-      "user_id": "USR-0001",
-      "activity": "RECORD_PAYMENT",
-      "description": "Mencatat pembayaran KW/ASM/2026/0002 sebesar Rp 5.000.000 (Lunas)",
-      "timestamp": "2026-10-18T14:00:00.000Z"
-    },
-    {
-      "id": "LOG-0003",
-      "user_id": "USR-0002",
-      "activity": "RECORD_PAYMENT",
-      "description": "Mencatat pembayaran DP KW/ASM/2026/0003 sebesar Rp 7.000.000 untuk INV/ASM/2026/0002",
-      "timestamp": "2026-11-02T15:30:00.000Z"
-    },
-    {
-      "id": "LOG-0004",
-      "user_id": "USR-0002",
-      "activity": "CREATE_INVOICE",
-      "description": "Menerbitkan invoice INV/ASM/2026/0004 untuk Klinik Utama Medika Prima",
-      "timestamp": "2026-11-05T11:00:00.000Z"
     }
   ]
 }

@@ -48,6 +48,7 @@ interface CompanySettingsViewProps {
     webAppUrl: string,
     apiSecret: string
   ) => Promise<GasPingResult>;
+  onToggleDemoMode?: (enabled: boolean, resetAll?: boolean) => Promise<void>;
 }
 
 export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
@@ -63,6 +64,7 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
   onTriggerDatabaseSync,
   onPullDatabaseFromGas,
   onTestDatabaseConnection,
+  onToggleDemoMode,
 }) => {
   const [formState, setFormState] = useState<CompanySettingsMap>({
     ...settings,
@@ -362,6 +364,66 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
             )}
           </div>
         </div>
+
+        {/* Saklar Mode Demo ON / OFF (Data Bersih / Fresh) */}
+        {onToggleDemoMode && (
+          <div className="bg-white rounded-xl border border-slate-200 p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider">
+                <span
+                  className={
+                    databaseStatus.demo_mode !== false &&
+                    databaseStatus.mode !== 'LIVE_LOCAL'
+                      ? 'text-amber-700'
+                      : 'text-emerald-700'
+                  }
+                >
+                  {databaseStatus.demo_mode !== false &&
+                  databaseStatus.mode !== 'LIVE_LOCAL'
+                    ? 'STATUS SAAT INI: MODE DEMO AKTIF (MENAMPILKAN DATA SIMULASI)'
+                    : 'STATUS SAAT INI: DATA BERSIH / FRESH AKTIF (MODE DEMO DIMATIKAN)'}
+                </span>
+              </div>
+              <h3 className="text-sm font-bold text-[#101B35]">
+                Saklar Mode Demo &amp; Mode Data Bersih (Fresh)
+              </h3>
+              <p className="text-xs text-slate-600 max-w-2xl leading-relaxed">
+                Matikan Mode Demo untuk menghapus seluruh 4 invoice contoh (Rp 42.000.000), pembayaran simulasi, dan klien contoh sehingga dashboard mulai dari{' '}
+                <strong className="text-[#101B35]">Rp 0 (Data Bersih / Fresh)</strong>. Anda juga dapat menghidupkan kembali Mode Demo kapan saja untuk melihat simulasi grafik &amp; laporan.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+              <button
+                type="button"
+                data-testid="btn-disable-demo-mode"
+                onClick={() => onToggleDemoMode(false, false)}
+                className={`px-4 py-2.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+                  databaseStatus.demo_mode === false ||
+                  databaseStatus.mode === 'LIVE_LOCAL'
+                    ? 'bg-emerald-700 text-white shadow-xs'
+                    : 'bg-slate-100 text-[#101B35] hover:bg-slate-200'
+                }`}
+              >
+                Matikan Mode Demo (Data Bersih / Fresh)
+              </button>
+
+              <button
+                type="button"
+                data-testid="btn-enable-demo-mode"
+                onClick={() => onToggleDemoMode(true, false)}
+                className={`px-4 py-2.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+                  databaseStatus.demo_mode !== false &&
+                  databaseStatus.mode !== 'LIVE_LOCAL'
+                    ? 'bg-[#800020] text-white shadow-xs'
+                    : 'bg-slate-100 text-[#101B35] hover:bg-slate-200'
+                }`}
+              >
+                Hidupkan Mode Demo (Data Contoh)
+              </button>
+            </div>
+          </div>
+        )}
 
         {dbFeedback && (
           <div

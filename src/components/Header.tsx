@@ -1,5 +1,5 @@
-import React from 'react';
-import { Menu, Plus, CreditCard } from 'lucide-react';
+import React, { useState } from 'react';
+import { Menu, Plus, CreditCard, Sparkles, CheckCircle2 } from 'lucide-react';
 import type { NavTab } from './Sidebar';
 import type { DatabaseStatus, User } from '../types/invoice';
 
@@ -11,6 +11,7 @@ interface HeaderProps {
   onQuickCreateInvoice: () => void;
   onQuickRecordPayment: () => void;
   onNavigateTab: (tab: NavTab) => void;
+  onToggleDemoMode: (enabled: boolean) => Promise<void>;
 }
 
 const TAB_TITLES: Record<NavTab, string> = {
@@ -32,7 +33,23 @@ export const Header: React.FC<HeaderProps> = ({
   onQuickCreateInvoice,
   onQuickRecordPayment,
   onNavigateTab,
+  onToggleDemoMode,
 }) => {
+  const [togglingDemo, setTogglingDemo] = useState(false);
+  const isDemoActive =
+    databaseStatus.demo_mode !== false &&
+    databaseStatus.mode !== 'LIVE_LOCAL';
+
+  const handleToggleClick = async () => {
+    if (togglingDemo) return;
+    setTogglingDemo(true);
+    try {
+      await onToggleDemoMode(!isDemoActive);
+    } finally {
+      setTogglingDemo(false);
+    }
+  };
+
   return (
     <header className="bg-white border-b border-slate-200 px-4 sm:px-8 py-3.5 flex items-center justify-between gap-4 no-print sticky top-0 z-30">
       {/* Zone 1: Context / Breadcrumb Title */}
@@ -54,20 +71,29 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="text-[#800020] font-medium">
               {currentUser.role}
             </span>
-            {databaseStatus.mode === 'DEMO_LOCAL' && (
-              <>
-                <span aria-hidden="true">·</span>
-                <button
-                  type="button"
-                  onClick={() => onNavigateTab('database')}
-                  className="text-amber-700 hover:underline font-medium truncate cursor-pointer"
-                >
-                  <span className="sm:hidden">Mode DEMO</span>
-                  <span className="hidden sm:inline">
-                    Mode DEMO (Konfigurasi Google Sheets)
-                  </span>
-                </button>
-              </>
+            <span aria-hidden="true">·</span>
+            {isDemoActive ? (
+              <button
+                type="button"
+                onClick={() => onNavigateTab('database')}
+                className="text-amber-700 hover:underline font-medium truncate cursor-pointer"
+              >
+                <span className="sm:hidden">Mode DEMO Aktif</span>
+                <span className="hidden sm:inline">
+                  Mode DEMO Aktif (Data Contoh Simulasi)
+                </span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onNavigateTab('database')}
+                className="text-emerald-700 hover:underline font-semibold truncate cursor-pointer"
+              >
+                <span className="sm:hidden">Data Bersih (Fresh)</span>
+                <span className="hidden sm:inline">
+                  Mode Data Bersih / Fresh (Demo Dimatikan)
+                </span>
+              </button>
             )}
           </div>
           <h1 className="text-sm sm:text-lg font-bold text-[#101B35] truncate">
@@ -76,8 +102,43 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Zone 2: Primary Action Buttons */}
-      <div className="flex items-center gap-2.5 shrink-0">
+      {/* Zone 2: Demo Mode Switch & Primary Action Buttons */}
+      <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+        <button
+          type="button"
+          data-testid="header-toggle-demo-btn"
+          disabled={togglingDemo}
+          onClick={handleToggleClick}
+          title={
+            isDemoActive
+              ? 'Klik untuk mematikan Mode Demo agar data bersih/fresh (Rp 0)'
+              : 'Klik untuk menghidupkan kembali data contoh Mode Demo'
+          }
+          className={`inline-flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 ${
+            isDemoActive
+              ? 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
+              : 'bg-emerald-50 text-emerald-900 border-emerald-300 hover:bg-emerald-100'
+          }`}
+        >
+          {isDemoActive ? (
+            <>
+              <Sparkles className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+              <span className="hidden md:inline">Mode Demo: ON</span>
+              <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-900/10 text-amber-900 font-bold">
+                Matikan Demo
+              </span>
+            </>
+          ) : (
+            <>
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+              <span className="hidden md:inline">Data Bersih (Fresh)</span>
+              <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-900/10 text-emerald-900 font-bold">
+                Hidupkan Demo
+              </span>
+            </>
+          )}
+        </button>
+
         <button
           type="button"
           onClick={onQuickRecordPayment}
@@ -90,12 +151,14 @@ export const Header: React.FC<HeaderProps> = ({
         <button
           type="button"
           onClick={onQuickCreateInvoice}
-          className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#800020] hover:bg-[#660019] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          className="inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 text-xs font-semibold text-white bg-[#800020] hover:bg-[#660019] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >
           <Plus className="w-3.5 h-3.5" />
-          <span>Buat Invoice Baru</span>
+          <span className="hidden sm:inline">Buat Invoice Baru</span>
+          <span className="sm:hidden">Invoice</span>
         </button>
       </div>
     </header>
   );
 };
+

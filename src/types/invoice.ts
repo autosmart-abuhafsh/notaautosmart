@@ -131,7 +131,8 @@ export interface ActivityLog {
 }
 
 export interface DatabaseStatus {
-  mode: 'GOOGLE_SHEETS' | 'DEMO_LOCAL';
+  mode: 'GOOGLE_SHEETS' | 'DEMO_LOCAL' | 'LIVE_LOCAL';
+  demo_mode?: boolean;
   connected: boolean;
   spreadsheet_name: string;
   gas_url_configured: boolean;
@@ -139,3 +140,4 @@ export interface DatabaseStatus {
   last_sync: string | null;
   message: string;
 }
+

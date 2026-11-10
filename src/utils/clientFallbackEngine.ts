@@ -37,7 +37,31 @@ interface GasLocalConfig {
   webAppUrl: string;
   apiSecret: string;
   lastSync: string | null;
+  demoMode?: boolean;
 }
+
+const DEMO_CLIENT_IDS = new Set([
+  'CLT-0001',
+  'CLT-0002',
+  'CLT-0003',
+  'CLT-0004',
+]);
+const DEMO_INVOICE_IDS = new Set([
+  'INV-0001',
+  'INV-0002',
+  'INV-0003',
+  'INV-0004',
+]);
+const DEMO_ITEM_IDS = new Set([
+  'ITM-0001',
+  'ITM-0002',
+  'ITM-0003',
+  'ITM-0004',
+  'ITM-0005',
+  'ITM-0006',
+]);
+const DEMO_PAYMENT_IDS = new Set(['PAY-0001', 'PAY-0002', 'PAY-0003']);
+const DEMO_LOG_IDS = new Set(['LOG-0001', 'LOG-0002']);
 
 const DEFAULT_SETTINGS: CompanySettingsMap = {
   company_name: 'Autosmart Digital Solutions',
@@ -85,6 +109,8 @@ export function loadLocalGasConfig(): GasLocalConfig {
         webAppUrl: parsed.webAppUrl || envUrl,
         apiSecret: parsed.apiSecret || '',
         lastSync: parsed.lastSync || null,
+        demoMode:
+          parsed.demoMode !== undefined ? Boolean(parsed.demoMode) : true,
       };
     }
   } catch {
@@ -94,6 +120,7 @@ export function loadLocalGasConfig(): GasLocalConfig {
     webAppUrl: envUrl,
     apiSecret: '',
     lastSync: null,
+    demoMode: true,
   };
 }
 
@@ -711,8 +738,14 @@ export async function handleClientFallbackApi(
       client: db.CLIENTS.find((c) => c.id === inv.client_id),
     }));
 
+    const isDemo = cfg.demoMode !== false;
     const databaseStatus: DatabaseStatus = {
-      mode: cfg.webAppUrl ? 'GOOGLE_SHEETS' : 'DEMO_LOCAL',
+      mode: cfg.webAppUrl
+        ? 'GOOGLE_SHEETS'
+        : isDemo
+          ? 'DEMO_LOCAL'
+          : 'LIVE_LOCAL',
+      demo_mode: isDemo,
       connected: Boolean(cfg.webAppUrl),
       spreadsheet_name: 'AUTOSMART_INVOICE_DATABASE',
       gas_url_configured: Boolean(cfg.webAppUrl),
@@ -720,7 +753,9 @@ export async function handleClientFallbackApi(
       last_sync: cfg.lastSync,
       message: cfg.webAppUrl
         ? 'Terhubung ke Google Sheets melalui Google Apps Script'
-        : 'Mode Persisten Aktif (Siap dihubungkan ke Google Sheets)',
+        : isDemo
+          ? 'Mode DEMO Aktif — Menampilkan data contoh simulasi (Matikan Mode Demo untuk data bersih/fresh)'
+          : 'Mode Data Bersih (Fresh / Live) Aktif — Seluruh data simulasi demo telah dimatikan',
     };
 
     return {
@@ -1120,12 +1155,68 @@ export async function handleClientFallbackApi(
       webAppUrl: String(body.webAppUrl || '').trim(),
       apiSecret: String(body.apiSecret || '').trim(),
       lastSync: cfg.lastSync,
+      demoMode: cfg.demoMode,
     };
     saveLocalGasConfig(nextCfg);
     if (nextCfg.webAppUrl) {
       await syncLocalDbToGasIfConfigured(db);
     }
     return { ok: true };
+  }
+
+  if (url === '/api/database/demo-mode' && method === 'POST') {
+    const enabled = Boolean(body.enabled);
+    const resetAll = Boolean(body.resetAll);
+    cfg.demoMode = enabled;
+    saveLocalGasConfig(cfg);
+
+    if (!enabled) {
+      if (resetAll) {
+        db.CLIENTS = [];
+        db.INVOICES = [];
+        db.INVOICE_ITEMS = [];
+        db.PAYMENTS = [];
+        db.ACTIVITY_LOGS = [];
+      } else {
+        db.CLIENTS = db.CLIENTS.filter((c) => !DEMO_CLIENT_IDS.has(c.id));
+        db.INVOICES = db.INVOICES.filter((i) => !DEMO_INVOICE_IDS.has(i.id));
+        db.INVOICE_ITEMS = db.INVOICE_ITEMS.filter(
+          (it) =>
+            !DEMO_ITEM_IDS.has(it.id) && !DEMO_INVOICE_IDS.has(it.invoice_id)
+        );
+        db.PAYMENTS = db.PAYMENTS.filter(
+          (p) =>
+            !DEMO_PAYMENT_IDS.has(p.id) && !DEMO_INVOICE_IDS.has(p.invoice_id)
+        );
+        db.ACTIVITY_LOGS = db.ACTIVITY_LOGS.filter(
+          (l) => !DEMO_LOG_IDS.has(l.id)
+        );
+      }
+    } else {
+      const seed = createSeedState();
+      const existingClientIds = new Set(db.CLIENTS.map((c) => c.id));
+      for (const c of seed.CLIENTS) {
+        if (!existingClientIds.has(c.id)) db.CLIENTS.push(c);
+      }
+      const existingInvoiceIds = new Set(db.INVOICES.map((i) => i.id));
+      for (const inv of seed.INVOICES) {
+        if (!existingInvoiceIds.has(inv.id)) db.INVOICES.push(inv);
+      }
+      const existingItemIds = new Set(db.INVOICE_ITEMS.map((it) => it.id));
+      for (const it of seed.INVOICE_ITEMS) {
+        if (!existingItemIds.has(it.id)) db.INVOICE_ITEMS.push(it);
+      }
+      const existingPaymentIds = new Set(db.PAYMENTS.map((p) => p.id));
+      for (const p of seed.PAYMENTS) {
+        if (!existingPaymentIds.has(p.id)) db.PAYMENTS.push(p);
+      }
+    }
+
+    saveLocalDb(db);
+    return {
+      ok: true,
+      demo_mode: enabled,
+    };
   }
 
   if (url === '/api/database/test' && method === 'POST') {

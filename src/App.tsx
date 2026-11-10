@@ -433,6 +433,30 @@ export default function App() {
     });
   };
 
+  const handleToggleDemoMode = async (
+    enabled: boolean,
+    resetAll: boolean = false
+  ) => {
+    const existingCfg = loadLocalGasConfig();
+    saveLocalGasConfig({
+      ...existingCfg,
+      demoMode: enabled,
+    });
+    const res = await apiRequest('/api/database/demo-mode', {
+      method: 'POST',
+      body: JSON.stringify({ enabled, resetAll }),
+    });
+    if (res.databaseStatus) {
+      setDatabaseStatus(res.databaseStatus);
+    }
+    await loadBootstrapData();
+    showToast(
+      enabled
+        ? 'Mode Demo dihidupkan kembali — Menampilkan data contoh simulasi.'
+        : 'Mode Demo dimatikan — Database kini bersih (Fresh / Rp 0).'
+    );
+  };
+
   // Unauthenticated View
   if (!token || !currentUser) {
     if (loadingBootstrap) {
@@ -457,6 +481,7 @@ export default function App() {
         onLogout={handleLogout}
         mobileOpen={mobileMenuOpen}
         onCloseMobile={() => setMobileMenuOpen(false)}
+        onToggleDemoMode={handleToggleDemoMode}
       />
 
       {/* Main Content Area */}
@@ -478,6 +503,7 @@ export default function App() {
             setActiveTab('payments');
           }}
           onNavigateTab={setActiveTab}
+          onToggleDemoMode={handleToggleDemoMode}
         />
 
         {/* Toast Notification */}
@@ -604,6 +630,7 @@ export default function App() {
               onTriggerDatabaseSync={handleTriggerDatabaseSync}
               onPullDatabaseFromGas={handlePullDatabaseFromGas}
               onTestDatabaseConnection={handleTestDatabaseConnection}
+              onToggleDemoMode={handleToggleDemoMode}
             />
           )}
         </main>

@@ -257,7 +257,36 @@ interface GasConfig {
   webAppUrl: string;
   apiSecret: string;
   lastSync: string | null;
+  demoMode?: boolean;
 }
+
+const DEMO_CLIENT_IDS = new Set([
+  'CLT-0001',
+  'CLT-0002',
+  'CLT-0003',
+  'CLT-0004',
+]);
+const DEMO_INVOICE_IDS = new Set([
+  'INV-0001',
+  'INV-0002',
+  'INV-0003',
+  'INV-0004',
+]);
+const DEMO_ITEM_IDS = new Set([
+  'ITM-0001',
+  'ITM-0002',
+  'ITM-0003',
+  'ITM-0004',
+  'ITM-0005',
+  'ITM-0006',
+]);
+const DEMO_PAYMENT_IDS = new Set(['PAY-0001', 'PAY-0002', 'PAY-0003']);
+const DEMO_LOG_IDS = new Set([
+  'LOG-0001',
+  'LOG-0002',
+  'LOG-0003',
+  'LOG-0004',
+]);
 
 function loadGasConfig(): GasConfig {
   const envUrl =
@@ -270,6 +299,7 @@ function loadGasConfig(): GasConfig {
         webAppUrl: parsed.webAppUrl || envUrl,
         apiSecret: parsed.apiSecret || envSecret,
         lastSync: parsed.lastSync || null,
+        demoMode: parsed.demoMode !== undefined ? Boolean(parsed.demoMode) : true,
       };
     } catch {
       // fallback
@@ -279,11 +309,34 @@ function loadGasConfig(): GasConfig {
     webAppUrl: envUrl,
     apiSecret: envSecret,
     lastSync: null,
+    demoMode: true,
   };
 }
 
 function saveGasConfig(cfg: GasConfig): void {
   fs.writeFileSync(GAS_CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf-8');
+}
+
+function buildDatabaseStatusObject(cfg: GasConfig) {
+  const isDemo = cfg.demoMode !== false;
+  return {
+    mode: cfg.webAppUrl
+      ? 'GOOGLE_SHEETS'
+      : isDemo
+        ? 'DEMO_LOCAL'
+        : 'LIVE_LOCAL',
+    demo_mode: isDemo,
+    connected: Boolean(cfg.webAppUrl),
+    spreadsheet_name: 'AUTOSMART_INVOICE_DATABASE',
+    gas_url_configured: Boolean(cfg.webAppUrl),
+    gas_url_masked: cfg.webAppUrl ? `${cfg.webAppUrl.slice(0, 42)}...` : '',
+    last_sync: cfg.lastSync,
+    message: cfg.webAppUrl
+      ? 'Terhubung ke Google Sheets melalui Google Apps Script Proxy'
+      : isDemo
+        ? 'Mode DEMO Aktif — Menampilkan data contoh simulasi (Matikan Mode Demo untuk data bersih/fresh)'
+        : 'Mode Data Bersih (Fresh / Live) Aktif — Seluruh data simulasi demo telah dimatikan',
+  };
 }
 
 function createInitialDatabase(): AutosmartDatabase {
@@ -1100,19 +1153,7 @@ app.post('/api/auth/login', async (req, res) => {
       settings: getSettingsMap(db),
       users: safeUsers,
       activityLogs: logsWithNames,
-      databaseStatus: {
-        mode: cfg.webAppUrl ? 'GOOGLE_SHEETS' : 'DEMO_LOCAL',
-        connected: Boolean(cfg.webAppUrl),
-        spreadsheet_name: 'AUTOSMART_INVOICE_DATABASE',
-        gas_url_configured: Boolean(cfg.webAppUrl),
-        gas_url_masked: cfg.webAppUrl
-          ? `${cfg.webAppUrl.slice(0, 38)}...`
-          : '',
-        last_sync: cfg.lastSync,
-        message: cfg.webAppUrl
-          ? 'Terhubung ke Google Sheets melalui Google Apps Script Proxy'
-          : 'Mode DEMO / Database Persisten Lokal Aktif (Siap dihubungkan ke Google Sheets)',
-      },
+      databaseStatus: buildDatabaseStatusObject(cfg),
     });
   });
 
@@ -2040,19 +2081,99 @@ app.post('/api/auth/login', async (req, res) => {
         ok: true,
         autoSynced: autoSyncResult.synced,
         autoSyncError: autoSyncResult.error,
-        databaseStatus: {
-          mode: refreshedCfg.webAppUrl ? 'GOOGLE_SHEETS' : 'DEMO_LOCAL',
-          connected: Boolean(refreshedCfg.webAppUrl),
-          spreadsheet_name: 'AUTOSMART_INVOICE_DATABASE',
-          gas_url_configured: Boolean(refreshedCfg.webAppUrl),
-          gas_url_masked: refreshedCfg.webAppUrl
-            ? `${refreshedCfg.webAppUrl.slice(0, 42)}...`
-            : '',
-          last_sync: refreshedCfg.lastSync,
-          message: refreshedCfg.webAppUrl
-            ? 'Terhubung ke Google Sheets melalui Google Apps Script Proxy'
-            : 'Mode DEMO / Database Persisten Lokal Aktif',
-        },
+        databaseStatus: buildDatabaseStatusObject(refreshedCfg),
+      });
+    }
+  );
+
+  app.post(
+    '/api/database/demo-mode',
+    requireAuth,
+    async (req, res) => {
+      const user = (req as express.Request & { user: DbUser }).user;
+      const enabled = Boolean(req.body?.enabled);
+      const resetAll = Boolean(req.body?.resetAll);
+
+      const updatedStatus = await withLock(async () => {
+        const cfg = loadGasConfig();
+        cfg.demoMode = enabled;
+        saveGasConfig(cfg);
+
+        const db = readDb();
+        if (!enabled) {
+          if (resetAll) {
+            db.CLIENTS = [];
+            db.INVOICES = [];
+            db.INVOICE_ITEMS = [];
+            db.PAYMENTS = [];
+            db.ACTIVITY_LOGS = [];
+          } else {
+            db.CLIENTS = db.CLIENTS.filter((c) => !DEMO_CLIENT_IDS.has(c.id));
+            db.INVOICES = db.INVOICES.filter(
+              (inv) => !DEMO_INVOICE_IDS.has(inv.id)
+            );
+            db.INVOICE_ITEMS = db.INVOICE_ITEMS.filter(
+              (it) =>
+                !DEMO_ITEM_IDS.has(it.id) &&
+                !DEMO_INVOICE_IDS.has(it.invoice_id)
+            );
+            db.PAYMENTS = db.PAYMENTS.filter(
+              (p) =>
+                !DEMO_PAYMENT_IDS.has(p.id) &&
+                !DEMO_INVOICE_IDS.has(p.invoice_id)
+            );
+            db.ACTIVITY_LOGS = db.ACTIVITY_LOGS.filter(
+              (l) => !DEMO_LOG_IDS.has(l.id)
+            );
+          }
+          logActivity(
+            db,
+            user.id,
+            'TOGGLE_DEMO_MODE',
+            'Mode Demo dimatikan — Database kini dalam kondisi bersih (Fresh / Live).'
+          );
+        } else {
+          const seed = createInitialDatabase();
+          const existingClientIds = new Set(db.CLIENTS.map((c) => c.id));
+          for (const demoClient of seed.CLIENTS) {
+            if (!existingClientIds.has(demoClient.id)) {
+              db.CLIENTS.push(demoClient);
+            }
+          }
+          const existingInvoiceIds = new Set(db.INVOICES.map((i) => i.id));
+          for (const demoInv of seed.INVOICES) {
+            if (!existingInvoiceIds.has(demoInv.id)) {
+              db.INVOICES.push(demoInv);
+            }
+          }
+          const existingItemIds = new Set(db.INVOICE_ITEMS.map((it) => it.id));
+          for (const demoIt of seed.INVOICE_ITEMS) {
+            if (!existingItemIds.has(demoIt.id)) {
+              db.INVOICE_ITEMS.push(demoIt);
+            }
+          }
+          const existingPaymentIds = new Set(db.PAYMENTS.map((p) => p.id));
+          for (const demoPay of seed.PAYMENTS) {
+            if (!existingPaymentIds.has(demoPay.id)) {
+              db.PAYMENTS.push(demoPay);
+            }
+          }
+          logActivity(
+            db,
+            user.id,
+            'TOGGLE_DEMO_MODE',
+            'Mode Demo dihidupkan kembali — Menampilkan data contoh simulasi.'
+          );
+        }
+
+        writeDb(db);
+        return buildDatabaseStatusObject(cfg);
+      });
+
+      res.json({
+        ok: true,
+        demo_mode: enabled,
+        databaseStatus: updatedStatus,
       });
     }
   );
