@@ -658,7 +658,7 @@ export const ServiceManagement: React.FC<ServiceManagementProps> = ({
                     id="srv-price-input"
                     type="number"
                     min={0}
-                    step={1000}
+                    step="any"
                     required
                     value={price}
                     onChange={(e) => setPrice(e.target.value)}

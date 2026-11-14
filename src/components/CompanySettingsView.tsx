@@ -1251,7 +1251,7 @@ git push -u origin main`}</pre>
                     type="number"
                     min={0}
                     max={100}
-                    step={0.5}
+                    step="any"
                     value={formState.tax_rate}
                     onChange={(e) =>
                       handleFieldChange('tax_rate', e.target.value)

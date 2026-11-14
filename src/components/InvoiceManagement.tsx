@@ -715,7 +715,7 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                         <input
                           type="number"
                           min={0}
-                          step={1000}
+                          step="any"
                           aria-label={`Harga satuan baris ${idx + 1}`}
                           value={item.unit_price}
                           onChange={(e) =>
@@ -732,7 +732,7 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                         <input
                           type="number"
                           min={0}
-                          step={1000}
+                          step="any"
                           aria-label={`Diskon item baris ${idx + 1}`}
                           value={item.discount}
                           onChange={(e) =>
@@ -875,7 +875,7 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                       <input
                         type="number"
                         min={0}
-                        step={1000}
+                        step="any"
                         value={item.unit_price}
                         onChange={(e) =>
                           handleUpdateRowField(
@@ -894,7 +894,7 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                       <input
                         type="number"
                         min={0}
-                        step={1000}
+                        step="any"
                         value={item.discount}
                         onChange={(e) =>
                           handleUpdateRowField(
@@ -977,7 +977,7 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                 id="calc-overall-discount"
                 type="number"
                 min={0}
-                step={1000}
+                step="any"
                 value={overallDiscount}
                 onChange={(e) =>
                   setOverallDiscount(Math.max(0, Number(e.target.value) || 0))
@@ -994,7 +994,7 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                 id="calc-additional-cost"
                 type="number"
                 min={0}
-                step={1000}
+                step="any"
                 value={additionalCost}
                 onChange={(e) =>
                   setAdditionalCost(Math.max(0, Number(e.target.value) || 0))
@@ -1020,7 +1020,7 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                       type="number"
                       min={0}
                       max={100}
-                      step={0.5}
+                      step="any"
                       aria-label="Persentase Pajak"
                       value={taxRate}
                       onChange={(e) =>
