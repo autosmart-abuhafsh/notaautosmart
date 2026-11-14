@@ -1274,7 +1274,308 @@ app.post('/api/auth/login', async (req, res) => {
     res.json({ ok: true });
   });
 
-  // --- SERVICES CRUD ---
+  // --- SERVICE CATEGORIES & SERVICES CRUD ---
+  const DEFAULT_SERVICE_CATEGORIES_SERVER = [
+    'Website Profesional',
+    'Landing Page',
+    'Website Company Profile',
+    'Website E-Commerce',
+    'Website Travel & Umroh',
+    'Digital Marketing',
+    'Google Apps Script Application',
+    'Business Dashboard',
+    'CRM System',
+    'Web Application',
+    'Sistem Otomatisasi Bisnis',
+    'Manajemen Keuangan',
+    'Analisis Keuangan',
+    'Maintenance Website',
+    'Jasa Pengembangan Aplikasi',
+    'Layanan Digital Lainnya',
+  ];
+
+  function getDbCategories(db: AutosmartDatabase): string[] {
+    const row = db.COMPANY_SETTINGS.find(
+      (s) => s.setting_key === 'service_categories'
+    );
+    if (row && row.setting_value.trim()) {
+      try {
+        const parsed = JSON.parse(row.setting_value);
+        if (Array.isArray(parsed)) {
+          const seen = new Set<string>();
+          const cleaned: string[] = [];
+          for (const item of parsed) {
+            const str = sanitizeString(item);
+            if (str && !seen.has(str.toLowerCase())) {
+              seen.add(str.toLowerCase());
+              cleaned.push(str);
+            }
+          }
+          if (cleaned.length > 0) return cleaned;
+        }
+      } catch {
+        // fallback below
+      }
+    }
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const c of DEFAULT_SERVICE_CATEGORIES_SERVER) {
+      seen.add(c.toLowerCase());
+      result.push(c);
+    }
+    for (const s of db.SERVICES) {
+      const cat = sanitizeString(s.category);
+      if (cat && !seen.has(cat.toLowerCase())) {
+        seen.add(cat.toLowerCase());
+        result.push(cat);
+      }
+    }
+    return result;
+  }
+
+  function saveDbCategories(db: AutosmartDatabase, categories: string[]): void {
+    const now = getJakartaTimestamp();
+    const jsonVal = JSON.stringify(categories);
+    const idx = db.COMPANY_SETTINGS.findIndex(
+      (s) => s.setting_key === 'service_categories'
+    );
+    if (idx >= 0) {
+      db.COMPANY_SETTINGS[idx].setting_value = jsonVal;
+      db.COMPANY_SETTINGS[idx].updated_at = now;
+    } else {
+      db.COMPANY_SETTINGS.push({
+        id: `SET-${String(db.COMPANY_SETTINGS.length + 1).padStart(3, '0')}`,
+        setting_key: 'service_categories',
+        setting_value: jsonVal,
+        updated_at: now,
+      });
+    }
+  }
+
+  app.post('/api/services/categories', requireAuth, async (req, res) => {
+    const user = (req as express.Request & { user: DbUser }).user;
+    const rawCat = sanitizeString(req.body?.category);
+    if (!rawCat) {
+      res.status(400).json({ error: 'Nama kategori layanan wajib diisi.' });
+      return;
+    }
+
+    const result = await withLock(async () => {
+      const db = readDb();
+      const categories = getDbCategories(db);
+      if (categories.some((c) => c.toLowerCase() === rawCat.toLowerCase())) {
+        return {
+          ok: false as const,
+          error: `Kategori "${rawCat}" sudah ada dalam daftar.`,
+        };
+      }
+      const nextCategories = [...categories, rawCat];
+      saveDbCategories(db, nextCategories);
+      logActivity(
+        db,
+        user.id,
+        'CREATE_SERVICE_CATEGORY',
+        `Menambahkan kategori layanan baru: ${rawCat}`
+      );
+      writeDb(db);
+      await syncWithGasIfConfigured(db);
+      return {
+        ok: true as const,
+        categories: nextCategories,
+        added: rawCat,
+        settings: getSettingsMap(db),
+      };
+    });
+
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.status(201).json(result);
+  });
+
+  app.put('/api/services/categories', requireAuth, async (req, res) => {
+    const user = (req as express.Request & { user: DbUser }).user;
+    const oldCategory = String(req.body?.oldCategory ?? '').trim();
+    const newCategory = sanitizeString(req.body?.newCategory);
+
+    if (!oldCategory) {
+      res.status(400).json({ error: 'Kategori asal wajib dipilih.' });
+      return;
+    }
+    if (!newCategory) {
+      res.status(400).json({ error: 'Nama kategori baru wajib diisi.' });
+      return;
+    }
+
+    const result = await withLock(async () => {
+      const db = readDb();
+      const categories = getDbCategories(db);
+      const targetIdx = categories.findIndex((c) => c === oldCategory);
+      if (targetIdx === -1) {
+        return {
+          ok: false as const,
+          error: `Kategori "${oldCategory}" tidak ditemukan.`,
+        };
+      }
+      const dupIdx = categories.findIndex(
+        (c, idx) =>
+          idx !== targetIdx && c.toLowerCase() === newCategory.toLowerCase()
+      );
+      if (dupIdx !== -1) {
+        return {
+          ok: false as const,
+          error: `Kategori "${newCategory}" sudah digunakan.`,
+        };
+      }
+
+      const nextCategories = [...categories];
+      nextCategories[targetIdx] = newCategory;
+      saveDbCategories(db, nextCategories);
+
+      let updatedCount = 0;
+      for (const srv of db.SERVICES) {
+        if (srv.category === oldCategory) {
+          srv.category = newCategory;
+          updatedCount += 1;
+        }
+      }
+
+      logActivity(
+        db,
+        user.id,
+        'UPDATE_SERVICE_CATEGORY',
+        `Mengubah nama kategori layanan "${oldCategory}" menjadi "${newCategory}" (${updatedCount} layanan diperbarui)`
+      );
+      writeDb(db);
+      await syncWithGasIfConfigured(db);
+      return {
+        ok: true as const,
+        categories: nextCategories,
+        services: db.SERVICES,
+        updatedCount,
+        settings: getSettingsMap(db),
+      };
+    });
+
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json(result);
+  });
+
+  app.delete('/api/services/categories', requireAuth, async (req, res) => {
+    const user = (req as express.Request & { user: DbUser }).user;
+    const targetCategory = String(req.body?.category ?? '').trim();
+    const requestedFallback = req.body?.fallbackCategory
+      ? String(req.body.fallbackCategory).trim()
+      : '';
+
+    if (!targetCategory) {
+      res.status(400).json({ error: 'Kategori yang akan dihapus wajib dipilih.' });
+      return;
+    }
+
+    const result = await withLock(async () => {
+      const db = readDb();
+      const categories = getDbCategories(db);
+      if (!categories.includes(targetCategory)) {
+        return {
+          ok: false as const,
+          error: `Kategori "${targetCategory}" tidak ditemukan.`,
+        };
+      }
+      if (categories.length <= 1) {
+        return {
+          ok: false as const,
+          error:
+            'Minimal harus terdapat 1 kategori layanan aktif di dalam sistem.',
+        };
+      }
+
+      const nextCategories = categories.filter((c) => c !== targetCategory);
+      const fallbackUsed =
+        requestedFallback && nextCategories.includes(requestedFallback)
+          ? requestedFallback
+          : nextCategories.includes('Layanan Digital Lainnya')
+            ? 'Layanan Digital Lainnya'
+            : nextCategories[0];
+
+      let reassignedCount = 0;
+      for (const srv of db.SERVICES) {
+        if (srv.category === targetCategory) {
+          srv.category = fallbackUsed;
+          reassignedCount += 1;
+        }
+      }
+
+      saveDbCategories(db, nextCategories);
+      logActivity(
+        db,
+        user.id,
+        'DELETE_SERVICE_CATEGORY',
+        `Menghapus kategori layanan "${targetCategory}"${
+          reassignedCount > 0
+            ? ` dan memindahkan ${reassignedCount} layanan ke "${fallbackUsed}"`
+            : ''
+        }`
+      );
+      writeDb(db);
+      await syncWithGasIfConfigured(db);
+      return {
+        ok: true as const,
+        categories: nextCategories,
+        services: db.SERVICES,
+        reassignedCount,
+        fallbackUsed,
+        settings: getSettingsMap(db),
+      };
+    });
+
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json(result);
+  });
+
+  app.post('/api/services/categories/reset', requireAuth, async (req, res) => {
+    const user = (req as express.Request & { user: DbUser }).user;
+
+    const result = await withLock(async () => {
+      const db = readDb();
+      const seen = new Set<string>();
+      const nextCategories: string[] = [];
+      for (const c of DEFAULT_SERVICE_CATEGORIES_SERVER) {
+        seen.add(c.toLowerCase());
+        nextCategories.push(c);
+      }
+      for (const s of db.SERVICES) {
+        const cat = sanitizeString(s.category);
+        if (cat && !seen.has(cat.toLowerCase())) {
+          seen.add(cat.toLowerCase());
+          nextCategories.push(cat);
+        }
+      }
+      saveDbCategories(db, nextCategories);
+      logActivity(
+        db,
+        user.id,
+        'RESET_SERVICE_CATEGORIES',
+        'Mengembalikan daftar kategori layanan standar dilengkapi kategori aktif'
+      );
+      writeDb(db);
+      await syncWithGasIfConfigured(db);
+      return {
+        categories: nextCategories,
+        settings: getSettingsMap(db),
+      };
+    });
+
+    res.json(result);
+  });
+
   app.post('/api/services', requireAuth, async (req, res) => {
     const user = (req as express.Request & { user: DbUser }).user;
     const body = req.body || {};
@@ -1285,13 +1586,15 @@ app.post('/api/auth/login', async (req, res) => {
 
     const created = await withLock(async () => {
       const db = readDb();
+      const cleanCat =
+        sanitizeString(body.category) || 'Layanan Digital Lainnya';
       const newService: DbService = {
         id: generateEntityId(
           db.SERVICES.map((s) => s.id),
           'SRV'
         ),
         service_name: sanitizeString(body.service_name),
-        category: sanitizeString(body.category || 'Layanan Digital Lainnya'),
+        category: cleanCat,
         description: sanitizeString(body.description || ''),
         unit: sanitizeString(body.unit || 'Paket'),
         price: Math.max(0, Math.round(Number(body.price) || 0)),
@@ -1299,6 +1602,10 @@ app.post('/api/auth/login', async (req, res) => {
         created_at: getJakartaTimestamp(),
       };
       db.SERVICES.unshift(newService);
+      const cats = getDbCategories(db);
+      if (!cats.some((c) => c.toLowerCase() === cleanCat.toLowerCase())) {
+        saveDbCategories(db, [...cats, cleanCat]);
+      }
       logActivity(
         db,
         user.id,
@@ -1327,15 +1634,21 @@ app.post('/api/auth/login', async (req, res) => {
       const idx = db.SERVICES.findIndex((s) => s.id === id);
       if (idx === -1) return null;
 
+      const cleanCat =
+        sanitizeString(body.category) || 'Layanan Digital Lainnya';
       db.SERVICES[idx] = {
         ...db.SERVICES[idx],
         service_name: sanitizeString(body.service_name),
-        category: sanitizeString(body.category || 'Layanan Digital Lainnya'),
+        category: cleanCat,
         description: sanitizeString(body.description || ''),
         unit: sanitizeString(body.unit || 'Paket'),
         price: Math.max(0, Math.round(Number(body.price) || 0)),
         status: body.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
       };
+      const cats = getDbCategories(db);
+      if (!cats.some((c) => c.toLowerCase() === cleanCat.toLowerCase())) {
+        saveDbCategories(db, [...cats, cleanCat]);
+      }
       logActivity(
         db,
         user.id,

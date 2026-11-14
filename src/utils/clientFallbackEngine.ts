@@ -13,6 +13,11 @@ import {
   calculateInvoiceTotals,
   generateNextDocumentNumber,
   resolveInvoiceStatus,
+  DEFAULT_SERVICE_CATEGORIES,
+  parseServiceCategories,
+  addServiceCategory,
+  renameServiceCategory,
+  deleteServiceCategory,
 } from './invoiceLogic';
 
 const STORAGE_DB_KEY = 'autosmart_local_db_v1';
@@ -824,15 +829,94 @@ export async function handleClientFallbackApi(
     return { ok: true };
   }
 
-  // 4. Services CRUD
+  // 4. Services & Service Categories CRUD
+  if (url === '/api/services/categories' && method === 'POST') {
+    const currentCats = parseServiceCategories(
+      db.SETTINGS.service_categories,
+      db.SERVICES
+    );
+    const res = addServiceCategory(currentCats, String(body.category || ''));
+    db.SETTINGS.service_categories = JSON.stringify(res.categories);
+    saveLocalDb(db);
+    await syncLocalDbToGasIfConfigured(db);
+    return {
+      categories: res.categories,
+      added: res.added,
+      settings: db.SETTINGS,
+    };
+  }
+
+  if (url === '/api/services/categories' && method === 'PUT') {
+    const currentCats = parseServiceCategories(
+      db.SETTINGS.service_categories,
+      db.SERVICES
+    );
+    const res = renameServiceCategory(
+      currentCats,
+      db.SERVICES,
+      String(body.oldCategory || ''),
+      String(body.newCategory || '')
+    );
+    db.SETTINGS.service_categories = JSON.stringify(res.categories);
+    db.SERVICES = res.services;
+    saveLocalDb(db);
+    await syncLocalDbToGasIfConfigured(db);
+    return {
+      categories: res.categories,
+      services: db.SERVICES,
+      updatedCount: res.updatedCount,
+      settings: db.SETTINGS,
+    };
+  }
+
+  if (url === '/api/services/categories' && method === 'DELETE') {
+    const currentCats = parseServiceCategories(
+      db.SETTINGS.service_categories,
+      db.SERVICES
+    );
+    const res = deleteServiceCategory(
+      currentCats,
+      db.SERVICES,
+      String(body.category || ''),
+      body.fallbackCategory ? String(body.fallbackCategory) : undefined
+    );
+    db.SETTINGS.service_categories = JSON.stringify(res.categories);
+    db.SERVICES = res.services;
+    saveLocalDb(db);
+    await syncLocalDbToGasIfConfigured(db);
+    return {
+      categories: res.categories,
+      services: db.SERVICES,
+      reassignedCount: res.reassignedCount,
+      fallbackUsed: res.fallbackUsed,
+      settings: db.SETTINGS,
+    };
+  }
+
+  if (url === '/api/services/categories/reset' && method === 'POST') {
+    const merged = parseServiceCategories(null, db.SERVICES);
+    const resetCats = Array.from(
+      new Set([...DEFAULT_SERVICE_CATEGORIES, ...merged])
+    );
+    db.SETTINGS.service_categories = JSON.stringify(resetCats);
+    saveLocalDb(db);
+    await syncLocalDbToGasIfConfigured(db);
+    return {
+      categories: resetCats,
+      settings: db.SETTINGS,
+    };
+  }
+
   if (url === '/api/services' && method === 'POST') {
+    const cleanCategory =
+      String(body.category || '').trim() || 'Layanan Digital Lainnya';
     const newService: ServiceItem = {
       id: nextEntityId(
         db.SERVICES.map((s) => s.id),
         'SRV'
       ),
       service_name: String(body.service_name || '').trim(),
-      category: String(body.category || 'Layanan Digital Lainnya'),
+      category: cleanCategory,
       description: String(body.description || ''),
       unit: String(body.unit || 'Paket'),
       price: Math.max(0, Math.round(Number(body.price) || 0)),
@@ -840,6 +924,16 @@ export async function handleClientFallbackApi(
       created_at: new Date().toISOString(),
     };
     db.SERVICES.unshift(newService);
+    const currentCats = parseServiceCategories(
+      db.SETTINGS.service_categories,
+      db.SERVICES
+    );
+    if (
+      !currentCats.some((c) => c.toLowerCase() === cleanCategory.toLowerCase())
+    ) {
+      currentCats.push(cleanCategory);
+      db.SETTINGS.service_categories = JSON.stringify(currentCats);
+    }
     saveLocalDb(db);
     await syncLocalDbToGasIfConfigured(db);
     return { service: newService };
@@ -849,15 +943,27 @@ export async function handleClientFallbackApi(
     const id = url.split('/').pop() || '';
     const idx = db.SERVICES.findIndex((s) => s.id === id);
     if (idx === -1) throw new Error('Layanan tidak ditemukan.');
+    const cleanCategory =
+      String(body.category || '').trim() || 'Layanan Digital Lainnya';
     db.SERVICES[idx] = {
       ...db.SERVICES[idx],
       service_name: String(body.service_name || '').trim(),
-      category: String(body.category || 'Layanan Digital Lainnya'),
+      category: cleanCategory,
       description: String(body.description || ''),
       unit: String(body.unit || 'Paket'),
       price: Math.max(0, Math.round(Number(body.price) || 0)),
       status: body.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
     };
+    const currentCats = parseServiceCategories(
+      db.SETTINGS.service_categories,
+      db.SERVICES
+    );
+    if (
+      !currentCats.some((c) => c.toLowerCase() === cleanCategory.toLowerCase())
+    ) {
+      currentCats.push(cleanCategory);
+      db.SETTINGS.service_categories = JSON.stringify(currentCats);
+    }
     saveLocalDb(db);
     await syncLocalDbToGasIfConfigured(db);
     return { service: db.SERVICES[idx] };

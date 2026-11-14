@@ -438,3 +438,196 @@ export function computeDashboardMetrics(
     overdueInvoicesCount,
   };
 }
+
+export const DEFAULT_SERVICE_CATEGORIES: string[] = [
+  'Website Profesional',
+  'Landing Page',
+  'Website Company Profile',
+  'Website E-Commerce',
+  'Website Travel & Umroh',
+  'Digital Marketing',
+  'Google Apps Script Application',
+  'Business Dashboard',
+  'CRM System',
+  'Web Application',
+  'Sistem Otomatisasi Bisnis',
+  'Manajemen Keuangan',
+  'Analisis Keuangan',
+  'Maintenance Website',
+  'Jasa Pengembangan Aplikasi',
+  'Layanan Digital Lainnya',
+];
+
+/**
+ * Parse stored JSON category list or fall back to DEFAULT_SERVICE_CATEGORIES.
+ * If rawJson is not yet initialized, merges any custom categories present on services.
+ */
+export function parseServiceCategories(
+  rawJson: string | undefined | null,
+  services?: Array<{ category?: string }>
+): string[] {
+  if (rawJson && rawJson.trim()) {
+    try {
+      const parsed = JSON.parse(rawJson);
+      if (Array.isArray(parsed)) {
+        const seen = new Set<string>();
+        const cleaned: string[] = [];
+        for (const item of parsed) {
+          const str = sanitizeSpreadsheetInput(String(item ?? ''));
+          if (str && !seen.has(str.toLowerCase())) {
+            seen.add(str.toLowerCase());
+            cleaned.push(str);
+          }
+        }
+        if (cleaned.length > 0) {
+          return cleaned;
+        }
+      }
+    } catch {
+      // Fallback to default below
+    }
+  }
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const cat of DEFAULT_SERVICE_CATEGORIES) {
+    seen.add(cat.toLowerCase());
+    result.push(cat);
+  }
+  if (Array.isArray(services)) {
+    for (const srv of services) {
+      const cat = sanitizeSpreadsheetInput(String(srv?.category ?? ''));
+      if (cat && !seen.has(cat.toLowerCase())) {
+        seen.add(cat.toLowerCase());
+        result.push(cat);
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Add a new service category with validation and duplicate prevention.
+ */
+export function addServiceCategory(
+  categories: string[],
+  newCategory: string
+): { categories: string[]; added: string } {
+  const cleanName = sanitizeSpreadsheetInput(newCategory);
+  if (!cleanName) {
+    throw new Error('Nama kategori layanan wajib diisi.');
+  }
+  const exists = categories.some(
+    (c) => c.toLowerCase() === cleanName.toLowerCase()
+  );
+  if (exists) {
+    throw new Error(`Kategori "${cleanName}" sudah ada dalam daftar.`);
+  }
+  return {
+    categories: [...categories, cleanName],
+    added: cleanName,
+  };
+}
+
+/**
+ * Rename an existing service category and update all services referencing the old category name.
+ */
+export function renameServiceCategory<T extends { category: string }>(
+  categories: string[],
+  services: T[],
+  oldName: string,
+  newName: string
+): { categories: string[]; services: T[]; updatedCount: number } {
+  const cleanOld = String(oldName ?? '').trim();
+  const cleanNew = sanitizeSpreadsheetInput(newName);
+  if (!cleanOld) {
+    throw new Error('Kategori asal tidak valid.');
+  }
+  if (!cleanNew) {
+    throw new Error('Nama kategori baru wajib diisi.');
+  }
+
+  const targetIdx = categories.findIndex((c) => c === cleanOld);
+  if (targetIdx === -1) {
+    throw new Error(`Kategori "${cleanOld}" tidak ditemukan.`);
+  }
+
+  const duplicateIdx = categories.findIndex(
+    (c, idx) => idx !== targetIdx && c.toLowerCase() === cleanNew.toLowerCase()
+  );
+  if (duplicateIdx !== -1) {
+    throw new Error(`Kategori "${cleanNew}" sudah digunakan.`);
+  }
+
+  const nextCategories = [...categories];
+  nextCategories[targetIdx] = cleanNew;
+
+  let updatedCount = 0;
+  const nextServices = services.map((srv) => {
+    if (srv.category === cleanOld) {
+      updatedCount += 1;
+      return { ...srv, category: cleanNew };
+    }
+    return srv;
+  });
+
+  return {
+    categories: nextCategories,
+    services: nextServices,
+    updatedCount,
+  };
+}
+
+/**
+ * Delete a service category and reassign any services under it to a fallback category.
+ */
+export function deleteServiceCategory<T extends { category: string }>(
+  categories: string[],
+  services: T[],
+  targetName: string,
+  fallbackCategory?: string
+): {
+  categories: string[];
+  services: T[];
+  reassignedCount: number;
+  fallbackUsed: string;
+} {
+  const cleanTarget = String(targetName ?? '').trim();
+  if (!cleanTarget) {
+    throw new Error('Kategori yang akan dihapus tidak valid.');
+  }
+  if (!categories.includes(cleanTarget)) {
+    throw new Error(`Kategori "${cleanTarget}" tidak ditemukan.`);
+  }
+  if (categories.length <= 1) {
+    throw new Error(
+      'Minimal harus terdapat 1 kategori layanan aktif di dalam sistem.'
+    );
+  }
+
+  const nextCategories = categories.filter((c) => c !== cleanTarget);
+  const cleanFallback = fallbackCategory ? fallbackCategory.trim() : '';
+  const fallbackUsed =
+    cleanFallback && nextCategories.includes(cleanFallback)
+      ? cleanFallback
+      : nextCategories.includes('Layanan Digital Lainnya')
+        ? 'Layanan Digital Lainnya'
+        : nextCategories[0];
+
+  let reassignedCount = 0;
+  const nextServices = services.map((srv) => {
+    if (srv.category === cleanTarget) {
+      reassignedCount += 1;
+      return { ...srv, category: fallbackUsed };
+    }
+    return srv;
+  });
+
+  return {
+    categories: nextCategories,
+    services: nextServices,
+    reassignedCount,
+    fallbackUsed,
+  };
+}
+

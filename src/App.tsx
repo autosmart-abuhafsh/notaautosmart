@@ -33,6 +33,7 @@ import {
   mirrorBootstrapToLocalDb,
   saveLocalGasConfig,
 } from './utils/clientFallbackEngine';
+import { parseServiceCategories } from './utils/invoiceLogic';
 
 const DEFAULT_SETTINGS: CompanySettingsMap = {
   company_name: 'Autosmart Digital Solutions',
@@ -286,6 +287,67 @@ export default function App() {
     await loadBootstrapData();
     showToast('Layanan berhasil dihapus dari katalog.');
   };
+
+  const handleAddCategory = async (categoryName: string) => {
+    const res = await apiRequest('/api/services/categories', {
+      method: 'POST',
+      body: JSON.stringify({ category: categoryName }),
+    });
+    if (res.settings) {
+      setSettings((prev) => ({ ...prev, ...res.settings }));
+    }
+    await loadBootstrapData();
+    showToast(`Kategori "${res.added || categoryName}" berhasil ditambahkan.`);
+  };
+
+  const handleRenameCategory = async (oldName: string, newName: string) => {
+    const res = await apiRequest('/api/services/categories', {
+      method: 'PUT',
+      body: JSON.stringify({ oldCategory: oldName, newCategory: newName }),
+    });
+    if (res.settings) {
+      setSettings((prev) => ({ ...prev, ...res.settings }));
+    }
+    await loadBootstrapData();
+    showToast(
+      `Kategori "${oldName}" berhasil diubah menjadi "${newName}".`
+    );
+  };
+
+  const handleDeleteCategory = async (
+    categoryName: string,
+    fallbackCategory?: string
+  ) => {
+    const res = await apiRequest('/api/services/categories', {
+      method: 'DELETE',
+      body: JSON.stringify({ category: categoryName, fallbackCategory }),
+    });
+    if (res.settings) {
+      setSettings((prev) => ({ ...prev, ...res.settings }));
+    }
+    await loadBootstrapData();
+    showToast(
+      res.reassignedCount > 0
+        ? `Kategori "${categoryName}" dihapus (${res.reassignedCount} layanan dipindahkan ke "${res.fallbackUsed}").`
+        : `Kategori "${categoryName}" berhasil dihapus.`
+    );
+  };
+
+  const handleResetCategories = async () => {
+    const res = await apiRequest('/api/services/categories/reset', {
+      method: 'POST',
+    });
+    if (res.settings) {
+      setSettings((prev) => ({ ...prev, ...res.settings }));
+    }
+    await loadBootstrapData();
+    showToast('Daftar kategori layanan standar berhasil dipulihkan.');
+  };
+
+  const serviceCategories = React.useMemo(
+    () => parseServiceCategories(settings.service_categories, services),
+    [settings.service_categories, services]
+  );
 
   const handleCreateInvoice = async (
     payload: Record<string, unknown>
@@ -550,9 +612,14 @@ export default function App() {
           {activeTab === 'services' && (
             <ServiceManagement
               services={services}
+              categories={serviceCategories}
               onCreateService={handleCreateService}
               onUpdateService={handleUpdateService}
               onDeleteService={handleDeleteService}
+              onAddCategory={handleAddCategory}
+              onRenameCategory={handleRenameCategory}
+              onDeleteCategory={handleDeleteCategory}
+              onResetCategories={handleResetCategories}
             />
           )}
 

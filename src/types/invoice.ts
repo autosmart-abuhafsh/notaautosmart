@@ -119,6 +119,7 @@ export interface CompanySettingsMap {
   date_format: string;
   signatory_name: string;
   signatory_role: string;
+  service_categories?: string;
 }
 
 export interface ActivityLog {

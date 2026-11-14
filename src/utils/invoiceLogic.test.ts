@@ -8,6 +8,11 @@ import {
   sanitizeSpreadsheetInput,
   formatRupiah,
   computeDashboardMetrics,
+  DEFAULT_SERVICE_CATEGORIES,
+  parseServiceCategories,
+  addServiceCategory,
+  renameServiceCategory,
+  deleteServiceCategory,
 } from './invoiceLogic';
 import type { Invoice, Payment } from '../types/invoice';
 
@@ -198,3 +203,48 @@ test('computeDashboardMetrics aggregates real invoice and payment metrics', () =
   assert.equal(metrics.unpaidInvoicesCount, 1);
   assert.equal(metrics.overdueInvoicesCount, 1);
 });
+
+test('service categories can be parsed, added, renamed, and deleted with service reassignment', () => {
+  const initial = parseServiceCategories(undefined);
+  assert.equal(initial.length, DEFAULT_SERVICE_CATEGORIES.length);
+
+  // Add category
+  const addedRes = addServiceCategory(initial, 'Konsultasi AI & Data');
+  assert.equal(addedRes.added, 'Konsultasi AI & Data');
+  assert.equal(addedRes.categories.length, initial.length + 1);
+  assert.equal(addedRes.categories.includes('Konsultasi AI & Data'), true);
+
+  // Duplicate check (case-insensitive)
+  assert.throws(() => {
+    addServiceCategory(addedRes.categories, 'konsultasi ai & data');
+  });
+
+  // Rename category & cascade update services
+  const sampleServices = [
+    { id: 'SRV-1', category: 'Konsultasi AI & Data' },
+    { id: 'SRV-2', category: 'Website Profesional' },
+  ];
+  const renamedRes = renameServiceCategory(
+    addedRes.categories,
+    sampleServices,
+    'Konsultasi AI & Data',
+    'Solusi AI Korporat'
+  );
+  assert.equal(renamedRes.updatedCount, 1);
+  assert.equal(renamedRes.categories.includes('Solusi AI Korporat'), true);
+  assert.equal(renamedRes.categories.includes('Konsultasi AI & Data'), false);
+  assert.equal(renamedRes.services[0].category, 'Solusi AI Korporat');
+
+  // Delete category & reassign services to fallback
+  const deletedRes = deleteServiceCategory(
+    renamedRes.categories,
+    renamedRes.services,
+    'Solusi AI Korporat',
+    'Layanan Digital Lainnya'
+  );
+  assert.equal(deletedRes.reassignedCount, 1);
+  assert.equal(deletedRes.fallbackUsed, 'Layanan Digital Lainnya');
+  assert.equal(deletedRes.categories.includes('Solusi AI Korporat'), false);
+  assert.equal(deletedRes.services[0].category, 'Layanan Digital Lainnya');
+});
+
