@@ -1,27 +1,12 @@
 export type UserRole = 'Administrator' | 'Staff';
-
-export type InvoiceStatus =
-  | 'Draft'
-  | 'Sent'
-  | 'Unpaid'
-  | 'Partially Paid'
-  | 'Paid'
-  | 'Overdue'
-  | 'Cancelled';
-
-export type PaymentMethod =
-  | 'Transfer Bank'
-  | 'Tunai'
-  | 'QRIS'
-  | 'E-Wallet'
-  | 'Metode lainnya';
+export type UserStatus = 'Aktif' | 'Nonaktif';
 
 export interface User {
   id: string;
   name: string;
   email: string;
   role: UserRole;
-  status: 'Aktif' | 'Nonaktif';
+  status: UserStatus;
   created_at: string;
 }
 
@@ -37,16 +22,29 @@ export interface Client {
   created_at: string;
 }
 
+export type ServiceCategory = string;
+
+export type ServiceUnit = 'Paket' | 'Proyek' | 'Bulan' | 'Tahun' | 'Item' | 'Jam';
+
 export interface ServiceItem {
   id: string;
   service_name: string;
-  category: string;
+  category: ServiceCategory;
   description: string;
   unit: string;
   price: number;
   status: 'Aktif' | 'Nonaktif';
   created_at: string;
 }
+
+export type InvoiceStatus =
+  | 'Draft'
+  | 'Sent'
+  | 'Unpaid'
+  | 'Partially Paid'
+  | 'Paid'
+  | 'Overdue'
+  | 'Cancelled';
 
 export interface InvoiceLineItem {
   id: string;
@@ -82,6 +80,13 @@ export interface Invoice {
   client?: Client;
 }
 
+export type PaymentMethod =
+  | 'Transfer Bank'
+  | 'Tunai'
+  | 'QRIS'
+  | 'E-Wallet'
+  | 'Metode lainnya';
+
 export interface Payment {
   id: string;
   receipt_number: string;
@@ -91,7 +96,6 @@ export interface Payment {
   payment_method: PaymentMethod;
   reference_number: string;
   notes: string;
-  recorded_by?: string;
   created_at: string;
 }
 
@@ -113,13 +117,14 @@ export interface CompanySettingsMap {
   document_year: string;
   footer_note: string;
   terms_and_conditions: string;
-  tax_enabled: string; // 'true' | 'false'
-  tax_rate: string; // numeric string e.g. '11'
+  tax_enabled: string;
+  tax_rate: string;
   currency: string;
   date_format: string;
   signatory_name: string;
   signatory_role: string;
   service_categories?: string;
+  [key: string]: string | undefined;
 }
 
 export interface ActivityLog {
@@ -132,8 +137,7 @@ export interface ActivityLog {
 }
 
 export interface DatabaseStatus {
-  mode: 'GOOGLE_SHEETS' | 'DEMO_LOCAL' | 'LIVE_LOCAL';
-  demo_mode?: boolean;
+  mode: 'GOOGLE_SHEETS' | 'LOCAL_STORAGE';
   connected: boolean;
   spreadsheet_name: string;
   gas_url_configured: boolean;
@@ -141,4 +145,3 @@ export interface DatabaseStatus {
   last_sync: string | null;
   message: string;
 }
-

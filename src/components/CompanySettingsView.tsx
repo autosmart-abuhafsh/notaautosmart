@@ -1,43 +1,56 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Save,
   Upload,
-  Users,
   Database,
   RefreshCw,
+  Download,
+  UserPlus,
   Copy,
   Check,
-  Download,
-  Plus,
-  FileCode,
+  FileCode2,
+  ExternalLink,
   CheckCircle2,
-  BookOpen,
+  ArrowDownToLine,
+  Wifi,
+  AlertCircle,
+  RotateCcw,
 } from 'lucide-react';
 import type {
+  ActivityLog,
   CompanySettingsMap,
   DatabaseStatus,
   User,
+  UserRole,
 } from '../types/invoice';
-import { CODE_GS_CODE, SETUP_GS_CODE } from '../utils/gasTemplates';
-
-interface GasPingResult {
-  ok: boolean;
-  spreadsheetName?: string;
-  spreadsheetId?: string;
-  spreadsheetUrl?: string;
-  counts?: Record<string, number>;
-  serverTime?: string;
-}
+import { formatDateId } from '../utils/invoiceLogic';
+import { SETUP_GS_CODE, CODE_GS_CODE } from '../utils/gasTemplates';
+import { DEFAULT_COMPANY_LOGO_URL } from './BrandLogo';
 
 interface CompanySettingsViewProps {
   mode: 'settings' | 'database';
   settings: CompanySettingsMap;
   users: User[];
-  currentUser: User;
+  activityLogs: ActivityLog[];
   databaseStatus: DatabaseStatus;
   onSaveSettings: (updates: Partial<CompanySettingsMap>) => Promise<void>;
-  onCreateUser: (payload: Record<string, unknown>) => Promise<void>;
-  onUpdateUser: (id: string, payload: Record<string, unknown>) => Promise<void>;
+  onCreateUser: (payload: {
+    name: string;
+    email: string;
+    password: string;
+    role: UserRole;
+    status: 'Aktif' | 'Nonaktif';
+  }) => Promise<void>;
+  onUpdateUser: (
+    id: string,
+    payload: {
+      name?: string;
+      email?: string;
+      password?: string;
+      role?: UserRole;
+      status?: 'Aktif' | 'Nonaktif';
+    }
+  ) => Promise<void>;
   onSaveDatabaseConfig: (
     webAppUrl: string,
     apiSecret: string
@@ -47,15 +60,85 @@ interface CompanySettingsViewProps {
   onTestDatabaseConnection?: (
     webAppUrl: string,
     apiSecret: string
-  ) => Promise<GasPingResult>;
-  onToggleDemoMode?: (enabled: boolean, resetAll?: boolean) => Promise<void>;
+  ) => Promise<{
+    ok: boolean;
+    spreadsheetName?: string;
+    spreadsheetUrl?: string;
+    counts?: Record<string, number>;
+    serverTime?: string;
+  }>;
+}
+
+/**
+ * Compresses an uploaded image file into a clean data URL guaranteed to stay well below
+ * Google Sheets' 50,000-character cell limit (< 28,000 chars) while remaining sharp.
+ */
+function compressImageFile(
+  file: File,
+  maxDim: number = 260
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Gagal membaca file gambar.'));
+    reader.onload = () => {
+      const rawDataUrl = String(reader.result || '');
+      const img = new Image();
+      img.onerror = () => resolve(rawDataUrl);
+      img.onload = () => {
+        try {
+          let w = img.width || maxDim;
+          let h = img.height || maxDim;
+          if (w > maxDim || h > maxDim) {
+            if (w >= h) {
+              h = Math.round((h * maxDim) / w);
+              w = maxDim;
+            } else {
+              w = Math.round((w * maxDim) / h);
+              h = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, w);
+          canvas.height = Math.max(1, h);
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(rawDataUrl);
+            return;
+          }
+          ctx.clearRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+
+          // Try PNG first for transparency; if > 32,000 chars, use WebP/JPEG with white background
+          const pngUrl = canvas.toDataURL('image/png');
+          if (pngUrl.length <= 32000) {
+            resolve(pngUrl);
+            return;
+          }
+
+          ctx.globalCompositeOperation = 'destination-over';
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, w, h);
+          const webpUrl = canvas.toDataURL('image/webp', 0.85);
+          if (webpUrl.length <= 36000) {
+            resolve(webpUrl);
+            return;
+          }
+          resolve(canvas.toDataURL('image/jpeg', 0.82));
+        } catch {
+          resolve(rawDataUrl);
+        }
+      };
+      img.src = rawDataUrl;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
   mode,
   settings,
   users,
-  currentUser,
+  activityLogs,
   databaseStatus,
   onSaveSettings,
   onCreateUser,
@@ -64,1326 +147,1275 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
   onTriggerDatabaseSync,
   onPullDatabaseFromGas,
   onTestDatabaseConnection,
-  onToggleDemoMode,
 }) => {
   const [formState, setFormState] = useState<CompanySettingsMap>({
     ...settings,
   });
-  const [saving, setSaving] = useState(false);
-  const [saveMessage, setSaveMessage] = useState('');
+  const [savingSettings, setSavingSettings] = useState(false);
 
-  // User Management Modal State
+  // Keep formState synchronized when settings prop updates from server/bootstrap
+  useEffect(() => {
+    setFormState({ ...settings });
+  }, [settings]);
+
+  // User Form State
   const [userModalOpen, setUserModalOpen] = useState(false);
-  const [newUserName, setNewUserName] = useState('');
-  const [newUserEmail, setNewUserEmail] = useState('');
-  const [newUserPassword, setNewUserPassword] = useState('');
-  const [newUserRole, setNewUserRole] = useState<'Administrator' | 'Staff'>(
-    'Staff'
-  );
+  const [userName, setUserName] = useState('');
+  const [userEmail, setUserEmail] = useState('');
+  const [userPassword, setUserPassword] = useState('');
+  const [userRole, setUserRole] = useState<UserRole>('Staff');
+  const [savingUser, setSavingUser] = useState(false);
   const [userError, setUserError] = useState('');
 
-  // Database Connection State
-  const [gasUrlInput, setGasUrlInput] = useState('');
-  const [gasSecretInput, setGasSecretInput] = useState('');
-  const [dbSaving, setDbSaving] = useState(false);
-  const [dbSyncing, setDbSyncing] = useState(false);
-  const [dbPulling, setDbPulling] = useState(false);
-  const [dbTesting, setDbTesting] = useState(false);
-  const [dbFeedback, setDbFeedback] = useState('');
-  const [dbFeedbackType, setDbFeedbackType] = useState<'success' | 'error'>(
-    'success'
-  );
-  const [pingResult, setPingResult] = useState<GasPingResult | null>(null);
-
-  // Script Viewer Tab State ('setup' = Setup.gs, 'code' = Code.gs)
-  const [activeScriptTab, setActiveScriptTab] = useState<'setup' | 'code'>(
+  // Database Config State
+  const [gasUrl, setGasUrl] = useState('');
+  const [gasSecret, setGasSecret] = useState('');
+  const [savingGas, setSavingGas] = useState(false);
+  const [syncingGas, setSyncingGas] = useState(false);
+  const [pullingGas, setPullingGas] = useState(false);
+  const [testingGas, setTestingGas] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    message: string;
+    spreadsheetName?: string;
+    spreadsheetUrl?: string;
+    counts?: Record<string, number>;
+    serverTime?: string;
+  } | null>(null);
+  const [activeGasFileTab, setActiveGasFileTab] = useState<'setup' | 'code'>(
     'setup'
   );
-  const [copiedSetup, setCopiedSetup] = useState(false);
-  const [copiedCodeGs, setCopiedCodeGs] = useState(false);
+  const [copiedScript, setCopiedScript] = useState<'setup' | 'code' | null>(
+    null
+  );
 
-  const handleFieldChange = (
-    key: keyof CompanySettingsMap,
-    value: string
-  ) => {
-    setFormState((prev) => ({ ...prev, [key]: value }));
+  const setField = (key: keyof CompanySettingsMap, val: string) => {
+    setFormState((prev) => ({ ...prev, [key]: val }));
   };
 
-  const handleImageUpload = (
+  const handleFileUpload = async (
     key: 'logo_url' | 'qris_url',
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        handleFieldChange(key, reader.result);
-      }
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleSubmitSettings = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
-    setSaveMessage('');
     try {
-      await onSaveSettings(formState);
-      setSaveMessage(
-        'Pengaturan identitas perusahaan & invoice berhasil disimpan.'
+      const compressed = await compressImageFile(
+        file,
+        key === 'logo_url' ? 240 : 340
       );
-    } catch (err) {
-      setSaveMessage(
-        err instanceof Error ? err.message : 'Gagal menyimpan pengaturan.'
-      );
-    } finally {
-      setSaving(false);
+      setField(key, compressed);
+    } catch {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setField(key, String(reader.result || ''));
+      };
+      reader.readAsDataURL(file);
     }
   };
 
-  const handleAddUser = async (e: React.FormEvent) => {
+  const handleSettingsSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingSettings(true);
+    try {
+      await onSaveSettings(formState);
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const handleCreateUserSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setUserError('');
+    if (!userName.trim() || !userEmail.trim() || !userPassword.trim()) {
+      setUserError('Nama, email, dan kata sandi wajib diisi.');
+      return;
+    }
+    setSavingUser(true);
     try {
       await onCreateUser({
-        name: newUserName,
-        email: newUserEmail,
-        password: newUserPassword,
-        role: newUserRole,
+        name: userName.trim(),
+        email: userEmail.trim(),
+        password: userPassword,
+        role: userRole,
         status: 'Aktif',
       });
       setUserModalOpen(false);
-      setNewUserName('');
-      setNewUserEmail('');
-      setNewUserPassword('');
+      setUserName('');
+      setUserEmail('');
+      setUserPassword('');
     } catch (err) {
       setUserError(
-        err instanceof Error ? err.message : 'Gagal menambahkan pengguna.'
-      );
-    }
-  };
-
-  const handleSaveGasConfig = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setDbSaving(true);
-    setDbFeedback('');
-    try {
-      await onSaveDatabaseConfig(gasUrlInput, gasSecretInput);
-      setDbFeedbackType('success');
-      setDbFeedback(
-        'Konfigurasi server Google Apps Script berhasil disimpan & seluruh nota mulai disinkronkan secara otomatis.'
-      );
-    } catch (err) {
-      setDbFeedbackType('error');
-      setDbFeedback(
-        err instanceof Error ? err.message : 'Gagal menyimpan konfigurasi.'
+        err instanceof Error ? err.message : 'Gagal membuat akun pengguna.'
       );
     } finally {
-      setDbSaving(false);
+      setSavingUser(false);
     }
   };
 
-  const handleTestConnection = async () => {
-    if (!onTestDatabaseConnection) return;
-    setDbTesting(true);
-    setDbFeedback('');
-    try {
-      const res = await onTestDatabaseConnection(gasUrlInput, gasSecretInput);
-      setPingResult(res);
-      setDbFeedbackType('success');
-      setDbFeedback(
-        `Berhasil terhubung ke Server Apps Script! Spreadsheet: ${res.spreadsheetName || 'AUTOSMART_INVOICE_DATABASE'} (Waktu Server: ${res.serverTime || 'WIB'})`
-      );
-    } catch (err) {
-      setPingResult(null);
-      setDbFeedbackType('error');
-      setDbFeedback(
-        err instanceof Error
-          ? err.message
-          : 'Gagal menguji koneksi ke Google Apps Script.'
-      );
-    } finally {
-      setDbTesting(false);
-    }
+  const handleDownloadBackup = async () => {
+    const token = localStorage.getItem('autosmart_token') || '';
+    const res = await fetch('/api/database/backup', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `AUTOSMART_INVOICE_DATABASE_BACKUP_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   };
 
-  const handleSyncNow = async () => {
-    setDbSyncing(true);
-    setDbFeedback('');
+  const handleCopyScript = async (type: 'setup' | 'code') => {
+    const content = type === 'setup' ? SETUP_GS_CODE : CODE_GS_CODE;
     try {
-      await onTriggerDatabaseSync();
-      setDbFeedbackType('success');
-      setDbFeedback(
-        'Berhasil! Seluruh 8 sheet (Nota Invoice, Item, Kwitansi Pembayaran, Klien, & Layanan) telah disimpan ke Google Sheets.'
-      );
-    } catch (err) {
-      setDbFeedbackType('error');
-      setDbFeedback(
-        err instanceof Error
-          ? err.message
-          : 'Gagal sinkronisasi ke Google Sheets.'
-      );
-    } finally {
-      setDbSyncing(false);
-    }
-  };
-
-  const handlePullNow = async () => {
-    if (!onPullDatabaseFromGas) return;
-    setDbPulling(true);
-    setDbFeedback('');
-    try {
-      await onPullDatabaseFromGas();
-      setDbFeedbackType('success');
-      setDbFeedback(
-        'Berhasil menarik (Pull) seluruh data nota, invoice, pembayaran, dan klien dari Google Sheets ke aplikasi!'
-      );
-    } catch (err) {
-      setDbFeedbackType('error');
-      setDbFeedback(
-        err instanceof Error
-          ? err.message
-          : 'Gagal menarik data dari Google Sheets.'
-      );
-    } finally {
-      setDbPulling(false);
-    }
-  };
-
-  const handleDownloadBackupJson = async () => {
-    try {
-      const token =
-        localStorage.getItem('autosmart_token') || 'demo-autostart-admin';
-      const res = await fetch('/api/database/backup', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) return;
-      const data = await res.json();
-      const blob = new Blob([JSON.stringify(data, null, 2)], {
-        type: 'application/json',
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'AUTOSMART_INVOICE_DATABASE_BACKUP.json';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      await navigator.clipboard.writeText(content);
+      setCopiedScript(type);
+      setTimeout(() => setCopiedScript(null), 2500);
     } catch {
       // ignore
     }
   };
 
-  const handleDownloadScriptFile = (filename: string, content: string) => {
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  };
-
   if (mode === 'database') {
-    const currentScriptCode =
-      activeScriptTab === 'setup' ? SETUP_GS_CODE : CODE_GS_CODE;
+    const sheets = [
+      {
+        name: 'USERS',
+        desc: 'Data pengguna, email, password hash, role (Administrator / Staff), dan status.',
+      },
+      {
+        name: 'CLIENTS',
+        desc: 'Profil pelanggan, contact person, nomor WhatsApp, email, dan alamat.',
+      },
+      {
+        name: 'SERVICES',
+        desc: '16 kategori katalog layanan digital, satuan, dan harga standar.',
+      },
+      {
+        name: 'INVOICES',
+        desc: 'Dokumen invoice utama, jatuh tempo, pajak, diskon, dan sisa piutang.',
+      },
+      {
+        name: 'INVOICE_ITEMS',
+        desc: 'Rincian baris item layanan yang terkait pada setiap invoice_id.',
+      },
+      {
+        name: 'PAYMENTS',
+        desc: 'Riwayat pencatatan pembayaran (Penuh, DP, Bertahap) & nomor bukti KW/ASM.',
+      },
+      {
+        name: 'COMPANY_SETTINGS',
+        desc: 'Konfigurasi identitas perusahaan, rekening bank, logo, QRIS, dan penomoran.',
+      },
+      {
+        name: 'ACTIVITY_LOGS',
+        desc: 'Jejak audit aktivitas operasional pengguna berdasarkan zona waktu Asia/Jakarta.',
+      },
+    ];
 
     return (
-      <div className="space-y-6">
-        {/* Database Status Banner */}
-        <div className="bg-white rounded-xl border border-slate-200 p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 text-xs font-bold text-[#800020] uppercase">
-              <Database className="w-4 h-4" />
-              <span>
-                Status Server Database:{' '}
-                {databaseStatus.mode === 'GOOGLE_SHEETS'
-                  ? 'TERHUBUNG KE GOOGLE APPS SCRIPT & SHEETS'
-                  : 'MODE PERSISTEN LOKAL (SIAP DIHUBUNGKAN KE APPS SCRIPT)'}
-              </span>
-            </div>
-            <h2 className="text-base font-bold text-[#101B35] mt-1">
-              Spreadsheet Database: {databaseStatus.spreadsheet_name}
-            </h2>
-            <p className="text-xs text-slate-600 mt-0.5">
-              {databaseStatus.message}
-              {databaseStatus.last_sync
-                ? ` · Sinkronisasi terakhir: ${databaseStatus.last_sync}`
-                : ''}
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            {currentUser.role === 'Administrator' && (
-              <>
-                <button
-                  type="button"
-                  onClick={handleDownloadBackupJson}
-                  className="px-3 py-2 text-xs font-semibold text-[#101B35] bg-slate-100 hover:bg-slate-200 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Backup JSON</span>
-                </button>
-
-                <button
-                  type="button"
-                  disabled={dbPulling}
-                  onClick={handlePullNow}
-                  className="px-3.5 py-2 text-xs font-semibold text-[#101B35] border border-slate-300 hover:bg-slate-50 disabled:opacity-50 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
-                >
-                  <RefreshCw
-                    className={`w-3.5 h-3.5 ${dbPulling ? 'animate-spin' : ''}`}
-                  />
-                  <span>
-                    {dbPulling
-                      ? 'Menarik Data...'
-                      : 'Tarik dari Google Sheets (Pull)'}
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  disabled={dbSyncing}
-                  onClick={handleSyncNow}
-                  className="px-4 py-2 text-xs font-semibold text-white bg-[#800020] hover:bg-[#660019] disabled:opacity-50 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
-                >
-                  <RefreshCw
-                    className={`w-3.5 h-3.5 ${dbSyncing ? 'animate-spin' : ''}`}
-                  />
-                  <span>
-                    {dbSyncing
-                      ? 'Menyinkronkan...'
-                      : 'Simpan ke Google Sheets (Push)'}
-                  </span>
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* Saklar Mode Demo ON / OFF (Data Bersih / Fresh) */}
-        {onToggleDemoMode && (
-          <div className="bg-white rounded-xl border border-slate-200 p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider">
-                <span
-                  className={
-                    databaseStatus.demo_mode !== false &&
-                    databaseStatus.mode !== 'LIVE_LOCAL'
-                      ? 'text-amber-700'
-                      : 'text-emerald-700'
-                  }
-                >
-                  {databaseStatus.demo_mode !== false &&
-                  databaseStatus.mode !== 'LIVE_LOCAL'
-                    ? 'STATUS SAAT INI: MODE DEMO AKTIF (MENAMPILKAN DATA SIMULASI)'
-                    : 'STATUS SAAT INI: DATA BERSIH / FRESH AKTIF (MODE DEMO DIMATIKAN)'}
-                </span>
+      <div className="space-y-5 sm:space-y-6">
+        {/* Top Connection Status Banner */}
+        <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-6">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200">
+            <div className="flex items-start gap-3 sm:gap-3.5 min-w-0">
+              <div className="p-2.5 sm:p-3 rounded-xl bg-[#101B35] text-[#C5A15B] shrink-0">
+                <Database className="w-5 h-5 sm:w-6 sm:h-6" />
               </div>
-              <h3 className="text-sm font-bold text-[#101B35]">
-                Saklar Mode Demo &amp; Mode Data Bersih (Fresh)
-              </h3>
-              <p className="text-xs text-slate-600 max-w-2xl leading-relaxed">
-                Matikan Mode Demo untuk menghapus seluruh 4 invoice contoh (Rp 42.000.000), pembayaran simulasi, dan klien contoh sehingga dashboard mulai dari{' '}
-                <strong className="text-[#101B35]">Rp 0 (Data Bersih / Fresh)</strong>. Anda juga dapat menghidupkan kembali Mode Demo kapan saja untuk melihat simulasi grafik &amp; laporan.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-              <button
-                type="button"
-                data-testid="btn-disable-demo-mode"
-                onClick={() => onToggleDemoMode(false, false)}
-                className={`px-4 py-2.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-                  databaseStatus.demo_mode === false ||
-                  databaseStatus.mode === 'LIVE_LOCAL'
-                    ? 'bg-emerald-700 text-white shadow-xs'
-                    : 'bg-slate-100 text-[#101B35] hover:bg-slate-200'
-                }`}
-              >
-                Matikan Mode Demo (Data Bersih / Fresh)
-              </button>
-
-              <button
-                type="button"
-                data-testid="btn-enable-demo-mode"
-                onClick={() => onToggleDemoMode(true, false)}
-                className={`px-4 py-2.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-                  databaseStatus.demo_mode !== false &&
-                  databaseStatus.mode !== 'LIVE_LOCAL'
-                    ? 'bg-[#800020] text-white shadow-xs'
-                    : 'bg-slate-100 text-[#101B35] hover:bg-slate-200'
-                }`}
-              >
-                Hidupkan Mode Demo (Data Contoh)
-              </button>
-            </div>
-          </div>
-        )}
-
-        {dbFeedback && (
-          <div
-            role="status"
-            className={`p-4 rounded-xl text-xs font-semibold flex items-center justify-between gap-3 ${
-              dbFeedbackType === 'error'
-                ? 'bg-rose-900 text-white border border-rose-700'
-                : 'bg-emerald-900 text-white border border-emerald-700'
-            }`}
-          >
-            <span>{dbFeedback}</span>
-            <button
-              type="button"
-              onClick={() => setDbFeedback('')}
-              className="text-[11px] underline opacity-80 hover:opacity-100 cursor-pointer shrink-0"
-            >
-              Tutup
-            </button>
-          </div>
-        )}
-
-        {/* Row 1: Server-Side Proxy Configuration & Dual Script Viewer (Setup.gs & Code.gs) */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left: Form Koneksi URL Web App Google Apps Script */}
-          <div className="lg:col-span-5 bg-white rounded-xl border border-slate-200 p-6 space-y-4">
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-wider text-[#800020]">
-                Koneksi Server Penyimpanan Nota
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-sm sm:text-base font-bold text-[#101B35]">
+                    Database Spreadsheet: {databaseStatus.spreadsheet_name}
+                  </h2>
+                  <span
+                    className={`px-2.5 py-0.5 rounded text-[11px] font-semibold ${
+                      databaseStatus.connected
+                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                        : 'bg-slate-100 text-slate-700 border border-slate-200'
+                    }`}
+                  >
+                    {databaseStatus.connected
+                      ? 'GOOGLE SHEETS TERHUBUNG'
+                      : 'PENYIMPANAN PERSISTEN AKTIF'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-1">
+                  {databaseStatus.message}
+                </p>
+                {databaseStatus.last_sync && (
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Sinkronisasi terakhir:{' '}
+                    {formatDateId(databaseStatus.last_sync)}
+                  </p>
+                )}
               </div>
-              <h3 className="text-sm font-bold text-[#101B35] mt-0.5">
-                Hubungkan URL Web App Google Apps Script
-              </h3>
-              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                Tempelkan URL Web App (<span className="font-mono">.../exec</span>) dari hasil Deploy{' '}
-                <strong className="text-[#101B35]">Code.gs</strong> &{' '}
-                <strong className="text-[#101B35]">Setup.gs</strong>. Setiap kali Anda membuat invoice atau mencatat pembayaran nota, data otomatis tersimpan ke Google Sheets.
-              </p>
             </div>
 
-            {currentUser.role === 'Administrator' ? (
-              <form onSubmit={handleSaveGasConfig} className="space-y-4">
-                <div>
-                  <label
-                    htmlFor="gas-url-input"
-                    className="block text-xs font-semibold text-[#101B35] mb-1"
-                  >
-                    URL Web App Google Apps Script (Berakhiran /exec) *
-                  </label>
-                  <input
-                    id="gas-url-input"
-                    type="url"
-                    value={gasUrlInput}
-                    onChange={(e) => setGasUrlInput(e.target.value)}
-                    placeholder={
-                      databaseStatus.gas_url_masked ||
-                      'https://script.google.com/macros/s/AKfycb.../exec'
-                    }
-                    className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
-                  />
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="gas-secret-input"
-                    className="block text-xs font-semibold text-[#101B35] mb-1"
-                  >
-                    API Secret Key (Opsional — Kosongkan jika default)
-                  </label>
-                  <input
-                    id="gas-secret-input"
-                    type="password"
-                    value={gasSecretInput}
-                    onChange={(e) => setGasSecretInput(e.target.value)}
-                    placeholder="Kosongkan jika API_SECRET di Code.gs tidak diisi"
-                    className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-2">
+              {databaseStatus.gas_url_configured && (
+                <>
                   <button
                     type="button"
-                    disabled={dbTesting}
-                    onClick={handleTestConnection}
-                    className="py-2.5 px-3 text-xs font-semibold text-[#101B35] bg-slate-100 hover:bg-slate-200 rounded-lg inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                    disabled={syncingGas}
+                    onClick={async () => {
+                      setSyncingGas(true);
+                      try {
+                        await onTriggerDatabaseSync();
+                      } finally {
+                        setSyncingGas(false);
+                      }
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 sm:py-2 rounded-lg text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 cursor-pointer"
                   >
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 ${syncingGas ? 'animate-spin' : ''}`}
+                    />
                     <span>
-                      {dbTesting ? 'Menguji...' : '1. Uji Koneksi (Ping)'}
+                      {syncingGas
+                        ? 'Menyimpan...'
+                        : 'Simpan (Push) ke Google Sheets'}
                     </span>
                   </button>
 
-                  <button
-                    type="submit"
-                    disabled={dbSaving}
-                    className="py-2.5 px-3 text-xs font-semibold text-white bg-[#101B35] hover:bg-[#1a2b52] rounded-lg inline-flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Save className="w-3.5 h-3.5 text-[#C5A15B]" />
-                    <span>
-                      {dbSaving ? 'Menyimpan...' : '2. Simpan & Hubungkan'}
-                    </span>
-                  </button>
-                </div>
-              </form>
-            ) : (
-              <div className="p-4 rounded-lg bg-slate-50 text-xs text-slate-600">
-                Hanya Administrator yang dapat mengubah konfigurasi koneksi
-                Google Apps Script.
-              </div>
-            )}
+                  {onPullDatabaseFromGas && (
+                    <button
+                      type="button"
+                      disabled={pullingGas}
+                      onClick={async () => {
+                        setPullingGas(true);
+                        try {
+                          await onPullDatabaseFromGas();
+                        } finally {
+                          setPullingGas(false);
+                        }
+                      }}
+                      className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 sm:py-2 rounded-lg text-xs font-semibold text-[#101B35] bg-amber-100 hover:bg-amber-200 border border-amber-300 disabled:opacity-50 cursor-pointer"
+                    >
+                      <ArrowDownToLine
+                        className={`w-3.5 h-3.5 ${pullingGas ? 'animate-bounce' : ''}`}
+                      />
+                      <span>
+                        {pullingGas
+                          ? 'Menarik Data...'
+                          : 'Tarik Data (Pull) dari Sheets'}
+                      </span>
+                    </button>
+                  )}
+                </>
+              )}
 
-            {/* Live Ping Result Box */}
-            {pingResult && pingResult.ok && (
-              <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 space-y-2 text-xs">
-                <div className="font-bold text-emerald-900 flex items-center justify-between">
-                  <span>Spreadsheet Terdeteksi: {pingResult.spreadsheetName}</span>
-                  <span className="font-mono text-[10px] text-emerald-700">
-                    ONLINE
-                  </span>
-                </div>
-                {pingResult.counts && (
-                  <div className="grid grid-cols-2 gap-1.5 pt-1 font-mono text-[11px] text-emerald-800">
-                    <div>INVOICES: {pingResult.counts.INVOICES ?? 0} baris</div>
-                    <div>PAYMENTS: {pingResult.counts.PAYMENTS ?? 0} baris</div>
-                    <div>CLIENTS: {pingResult.counts.CLIENTS ?? 0} baris</div>
-                    <div>SERVICES: {pingResult.counts.SERVICES ?? 0} baris</div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="pt-4 border-t border-slate-100 space-y-2 text-xs">
-              <div className="font-bold text-[#101B35]">
-                8 Tabel Sheet Penyimpanan Nota & Transaksi:
-              </div>
-              <div className="grid grid-cols-2 gap-1.5 font-mono text-[11px] text-slate-600">
-                <div>1. USERS (Akun & Role)</div>
-                <div>2. CLIENTS (Pelanggan)</div>
-                <div>3. SERVICES (Layanan)</div>
-                <div>4. INVOICES (Nota Tagihan)</div>
-                <div>5. INVOICE_ITEMS (Rincian)</div>
-                <div>6. PAYMENTS (Kwitansi Bayar)</div>
-                <div>7. COMPANY_SETTINGS</div>
-                <div>8. ACTIVITY_LOGS (Audit)</div>
-              </div>
+              <button
+                type="button"
+                onClick={handleDownloadBackup}
+                className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 sm:py-2 rounded-lg text-xs font-semibold text-[#101B35] bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5 text-[#800020]" />
+                <span>Unduh Backup Database (.JSON)</span>
+              </button>
             </div>
           </div>
 
-          {/* Right: Dual-Tab Script Viewer (Setup.gs & Code.gs) */}
-          <div className="lg:col-span-7 bg-white rounded-xl border border-slate-200 p-6 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          {/* Step-by-Step Guide & Form Connection */}
+          <div className="mt-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+            {/* Left 5 cols: Connection Form */}
+            <div className="lg:col-span-5 bg-slate-50 rounded-xl border border-slate-200 p-4 sm:p-5 flex flex-col justify-between">
               <div>
-                <div className="text-[11px] font-bold uppercase tracking-wider text-[#800020]">
-                  2 File Script Siap Copas
-                </div>
-                <h3 className="text-sm font-bold text-[#101B35] mt-0.5">
-                  Kode Google Apps Script: Setup.gs & Code.gs
+                <h3 className="text-sm font-bold text-[#101B35] mb-1">
+                  Hubungkan URL Web App Google Apps Script
                 </h3>
-                <p className="text-xs text-slate-500">
-                  Klik tab di bawah ini untuk menyalin (Copas) masing-masing file ke proyek Google Apps Script Anda.
+                <p className="text-xs text-slate-600 mb-4 leading-relaxed">
+                  Setelah Anda memasang kode{' '}
+                  <span className="font-mono font-semibold text-[#800020]">
+                    Setup.gs
+                  </span>{' '}
+                  dan{' '}
+                  <span className="font-mono font-semibold text-[#800020]">
+                    Code.gs
+                  </span>{' '}
+                  di Google Sheets lalu melakukan <strong>Deploy Web App</strong>
+                  , tempelkan URL Web App (berakhiran <code>/exec</code>) di
+                  bawah ini:
+                </p>
+
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    setSavingGas(true);
+                    setTestResult(null);
+                    try {
+                      await onSaveDatabaseConfig(gasUrl, gasSecret);
+                      setGasUrl('');
+                      setGasSecret('');
+                    } finally {
+                      setSavingGas(false);
+                    }
+                  }}
+                  className="space-y-3.5"
+                >
+                  <div>
+                    <label
+                      htmlFor="gas-webapp-url"
+                      className="block text-xs font-semibold text-[#101B35] mb-1"
+                    >
+                      Google Apps Script Web App URL (Wajib diakhiri /exec)
+                    </label>
+                    <input
+                      id="gas-webapp-url"
+                      type="url"
+                      value={gasUrl}
+                      onChange={(e) => setGasUrl(e.target.value)}
+                      placeholder={
+                        databaseStatus.gas_url_masked ||
+                        'https://script.google.com/macros/s/.../exec'
+                      }
+                      className="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-lg bg-white focus:outline-none focus:border-[#800020]"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="gas-api-secret"
+                      className="block text-xs font-semibold text-[#101B35] mb-1"
+                    >
+                      API Secret Key (Opsional — Biarkan kosong jika standar)
+                    </label>
+                    <input
+                      id="gas-api-secret"
+                      type="password"
+                      value={gasSecret}
+                      onChange={(e) => setGasSecret(e.target.value)}
+                      placeholder="Kosongkan jika API_SECRET di Code.gs kosong"
+                      className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg bg-white focus:outline-none focus:border-[#800020]"
+                    />
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    {onTestDatabaseConnection && (
+                      <button
+                        type="button"
+                        disabled={testingGas}
+                        onClick={async () => {
+                          setTestingGas(true);
+                          setTestResult(null);
+                          try {
+                            const res = await onTestDatabaseConnection(
+                              gasUrl,
+                              gasSecret
+                            );
+                            setTestResult({
+                              ok: true,
+                              message:
+                                'Koneksi ke Google Apps Script berhasil diverifikasi!',
+                              spreadsheetName: res.spreadsheetName,
+                              spreadsheetUrl: res.spreadsheetUrl,
+                              counts: res.counts,
+                              serverTime: res.serverTime,
+                            });
+                          } catch (err) {
+                            setTestResult({
+                              ok: false,
+                              message:
+                                err instanceof Error
+                                  ? err.message
+                                  : 'Gagal menghubungi URL Web App.',
+                            });
+                          } finally {
+                            setTestingGas(false);
+                          }
+                        }}
+                        className="flex-1 py-2.5 px-3 bg-white hover:bg-slate-100 text-[#101B35] border border-slate-300 text-xs font-semibold rounded-lg transition-colors inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Wifi className="w-3.5 h-3.5 text-[#800020]" />
+                        <span>
+                          {testingGas ? 'Menguji...' : '1. Test Koneksi'}
+                        </span>
+                      </button>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={savingGas}
+                      className="flex-1 py-2.5 px-4 bg-[#800020] hover:bg-[#670019] text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                    >
+                      {savingGas
+                        ? 'Menyimpan & Sinkronisasi...'
+                        : '2. Simpan & Hubungkan'}
+                    </button>
+                  </div>
+                </form>
+
+                {testResult && (
+                  <div
+                    className={`mt-3.5 p-3 rounded-lg border text-xs ${
+                      testResult.ok
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                        : 'bg-red-50 border-red-200 text-red-800'
+                    }`}
+                  >
+                    <div className="flex items-start gap-2 font-semibold">
+                      {testResult.ok ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                      )}
+                      <span className="break-words">{testResult.message}</span>
+                    </div>
+                    {testResult.ok && (
+                      <div className="mt-2 pl-6 space-y-1 text-[11px] text-emerald-800">
+                        <div>
+                          Nama File:{' '}
+                          <span className="font-mono font-bold">
+                            {testResult.spreadsheetName}
+                          </span>
+                        </div>
+                        {testResult.counts && (
+                          <div>
+                            Data Tersimpan:{' '}
+                            <span className="font-semibold">
+                              {testResult.counts.INVOICES ?? 0} Invoice ·{' '}
+                              {testResult.counts.PAYMENTS ?? 0} Kwitansi ·{' '}
+                              {testResult.counts.CLIENTS ?? 0} Pelanggan
+                            </span>
+                          </div>
+                        )}
+                        {testResult.spreadsheetUrl && (
+                          <a
+                            href={testResult.spreadsheetUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[#800020] font-semibold underline mt-1"
+                          >
+                            <span>Buka Spreadsheet Sekarang</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-5 pt-4 border-t border-slate-200 text-[11px] text-slate-600 space-y-1.5">
+                <div className="font-bold text-[#101B35] flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>Otomatis Menyimpan Setiap Transaksi</span>
+                </div>
+                <p>
+                  Begitu URL Web App terhubung, setiap kali Anda menerbitkan
+                  nota/invoice baru, mencatat pembayaran kwitansi, memperbarui
+                  pengaturan/logo, atau menambah pelanggan, aplikasi otomatis
+                  mengirim pembaruan ke Google Sheets Anda.
                 </p>
               </div>
-
-              {/* File Switcher Tabs */}
-              <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-lg self-start sm:self-auto shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setActiveScriptTab('setup')}
-                  className={`px-3 py-1.5 text-xs font-mono font-bold rounded-md inline-flex items-center gap-1.5 cursor-pointer ${
-                    activeScriptTab === 'setup'
-                      ? 'bg-[#101B35] text-white'
-                      : 'text-slate-600 hover:text-[#101B35]'
-                  }`}
-                >
-                  <FileCode className="w-3.5 h-3.5 text-[#C5A15B]" />
-                  <span>1. Setup.gs</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveScriptTab('code')}
-                  className={`px-3 py-1.5 text-xs font-mono font-bold rounded-md inline-flex items-center gap-1.5 cursor-pointer ${
-                    activeScriptTab === 'code'
-                      ? 'bg-[#800020] text-white'
-                      : 'text-slate-600 hover:text-[#101B35]'
-                  }`}
-                >
-                  <FileCode className="w-3.5 h-3.5 text-[#C5A15B]" />
-                  <span>2. Code.gs</span>
-                </button>
-              </div>
             </div>
 
-            {/* Active Script Action Bar */}
-            <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs">
+            {/* Right 7 cols: Step-by-step installation guide */}
+            <div className="lg:col-span-7 bg-[#101B35] text-white rounded-xl p-4 sm:p-5 flex flex-col justify-between">
               <div>
-                {activeScriptTab === 'setup' ? (
-                  <span>
-                    <strong className="font-mono text-[#101B35]">Setup.gs</strong>:{' '}
-                    Berisi fungsi <code className="font-mono font-semibold text-[#800020]">setupAutosmartDatabase()</code> untuk membuat 8 tabel sheet secara otomatis.
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#C5A15B]">
+                    Panduan Cepat Integrasi Google Sheets (5 Menit)
                   </span>
-                ) : (
-                  <span>
-                    <strong className="font-mono text-[#101B35]">Code.gs</strong>:{' '}
-                    Berisi server Web App (<code className="font-mono font-semibold text-[#800020]">doGet</code> & <code className="font-mono font-semibold text-[#800020]">doPost</code>) untuk menyimpan nota, invoice, dan kwitansi.
-                  </span>
-                )}
+                  <a
+                    href="https://sheets.new"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-white/10 hover:bg-white/20 text-xs font-semibold text-white transition-colors"
+                  >
+                    <span>Buka Google Sheets Baru</span>
+                    <ExternalLink className="w-3 h-3 text-[#C5A15B]" />
+                  </a>
+                </div>
+
+                <ol className="space-y-2.5 text-xs text-slate-200 list-decimal list-inside leading-relaxed">
+                  <li>
+                    Buka Google Sheets baru (atau klik tombol{' '}
+                    <strong>Buka Google Sheets Baru</strong> di atas), beri nama{' '}
+                    <span className="font-mono text-[#C5A15B] break-all">
+                      AUTOSMART_INVOICE_DATABASE
+                    </span>
+                    .
+                  </li>
+                  <li>
+                    Klik menu <strong>Extensions (Ekstensi)</strong> &rarr;{' '}
+                    <strong>Apps Script</strong> di bagian atas Google Sheets.
+                  </li>
+                  <li>
+                    Buat 2 file terpisah di Apps Script agar rapi:
+                    <ul className="pl-5 mt-1 space-y-1 list-disc text-slate-300">
+                      <li>
+                        File 1:{' '}
+                        <strong className="text-white font-mono">
+                          Setup.gs
+                        </strong>{' '}
+                        — Salin dari tab <em>File 1: Setup.gs</em> di bawah,
+                        simpan, lalu klik tombol{' '}
+                        <strong className="text-[#C5A15B]">
+                          Run (Jalankan)
+                        </strong>{' '}
+                        pada fungsi <code>setupAutosmartDatabase</code> untuk
+                        membuat 8 Sheet tabel otomatis.
+                      </li>
+                      <li>
+                        File 2:{' '}
+                        <strong className="text-white font-mono">
+                          Code.gs
+                        </strong>{' '}
+                        — Salin dari tab <em>File 2: Code.gs</em> di bawah untuk
+                        menerima penyimpanan nota, invoice, pembayaran, dan
+                        pengaturan dari aplikasi.
+                      </li>
+                    </ul>
+                  </li>
+                  <li>
+                    Di kanan atas editor Apps Script, klik tombol biru{' '}
+                    <strong>Deploy (Terapkan)</strong> &rarr;{' '}
+                    <strong>New deployment (Deployment baru)</strong>.
+                  </li>
+                  <li>
+                    Pilih jenis <strong>Web app</strong>, atur{' '}
+                    <em>Execute as</em> ke <strong>Me (Saya)</strong>, dan{' '}
+                    <em>Who has access</em> ke{' '}
+                    <strong className="text-[#C5A15B]">
+                      Anyone (Siapa saja)
+                    </strong>
+                    , lalu klik <strong>Deploy</strong>.
+                  </li>
+                  <li>
+                    Salin <strong>Web app URL</strong> yang muncul, lalu tempel
+                    pada formulir di sebelah kiri dan klik{' '}
+                    <strong>Simpan & Hubungkan</strong>.
+                  </li>
+                </ol>
+              </div>
+            </div>
+          </div>
+
+          {/* Copy-Paste Google Apps Script Code Viewer (Setup.gs & Code.gs) */}
+          <div className="mt-6 bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div className="px-4 sm:px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <FileCode2 className="w-4 h-4 text-[#800020] shrink-0" />
+                <div>
+                  <h3 className="text-xs sm:text-sm font-bold text-[#101B35]">
+                    Kode Google Apps Script Siap Pakai (Setup.gs & Code.gs)
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Pilih masing-masing file di bawah ini lalu klik tombol Salin
+                    Kode untuk dipasang di Google Apps Script Anda.
+                  </p>
+                </div>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
-                {activeScriptTab === 'setup' ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await navigator.clipboard.writeText(SETUP_GS_CODE);
-                        setCopiedSetup(true);
-                        setTimeout(() => setCopiedSetup(false), 2500);
-                      }}
-                      className="px-3 py-1.5 text-xs font-semibold text-[#101B35] bg-white border border-slate-300 hover:bg-slate-100 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      {copiedSetup ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>Setup.gs Tersalin!</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>Copas Setup.gs</span>
-                        </>
-                      )}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleDownloadScriptFile('Setup.gs', SETUP_GS_CODE)
-                      }
-                      className="px-3 py-1.5 text-xs font-semibold text-white bg-[#101B35] hover:bg-[#1c2d54] rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>Unduh Setup.gs</span>
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await navigator.clipboard.writeText(CODE_GS_CODE);
-                        setCopiedCodeGs(true);
-                        setTimeout(() => setCopiedCodeGs(false), 2500);
-                      }}
-                      className="px-3 py-1.5 text-xs font-semibold text-[#101B35] bg-white border border-slate-300 hover:bg-slate-100 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      {copiedCodeGs ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>Code.gs Tersalin!</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>Copas Code.gs</span>
-                        </>
-                      )}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleDownloadScriptFile('Code.gs', CODE_GS_CODE)
-                      }
-                      className="px-3 py-1.5 text-xs font-semibold text-white bg-[#800020] hover:bg-[#660019] rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>Unduh Code.gs</span>
-                    </button>
-                  </>
-                )}
+              <div className="grid grid-cols-2 sm:flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveGasFileTab('setup')}
+                  className={`px-3 py-2 sm:py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer text-center ${
+                    activeGasFileTab === 'setup'
+                      ? 'bg-[#101B35] text-white'
+                      : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  File 1: Setup.gs
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveGasFileTab('code')}
+                  className={`px-3 py-2 sm:py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer text-center ${
+                    activeGasFileTab === 'code'
+                      ? 'bg-[#101B35] text-white'
+                      : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  File 2: Code.gs
+                </button>
               </div>
             </div>
 
-            <pre className="p-4 rounded-lg bg-[#101B35] text-slate-100 font-mono text-[11px] overflow-x-auto max-h-96 leading-relaxed">
-              {currentScriptCode}
-            </pre>
+            <div className="p-3.5 sm:p-4 bg-[#0B1326] text-slate-100">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 mb-3 border-b border-white/10">
+                <div className="text-xs font-mono text-[#C5A15B]">
+                  {activeGasFileTab === 'setup'
+                    ? 'Setup.gs — Membuat 8 Sheet Tabel & Header Otomatis (Jalankan fungsi setupAutosmartDatabase)'
+                    : 'Code.gs — Server API Web App (doGet & doPost) Penyimpanan Nota, Invoice, Kwitansi & Pengaturan'}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCopyScript(activeGasFileTab)}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#800020] hover:bg-[#670019] text-white transition-colors cursor-pointer shrink-0"
+                >
+                  {copiedScript === activeGasFileTab ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-300" />
+                      <span>
+                        Kode{' '}
+                        {activeGasFileTab === 'setup' ? 'Setup.gs' : 'Code.gs'}{' '}
+                        Tersalin!
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>
+                        Salin Kode{' '}
+                        {activeGasFileTab === 'setup' ? 'Setup.gs' : 'Code.gs'}
+                      </span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <pre className="text-[11px] font-mono leading-relaxed overflow-x-auto max-h-80 p-3 rounded-lg bg-black/40 border border-white/10 text-slate-200 select-all">
+                <code>
+                  {activeGasFileTab === 'setup' ? SETUP_GS_CODE : CODE_GS_CODE}
+                </code>
+              </pre>
+            </div>
+          </div>
+
+          {/* 8 Sheets Relational Schema Overview */}
+          <div className="mt-6">
+            <h3 className="text-sm font-bold text-[#101B35] mb-3">
+              Struktur 8 Sheet Database Standar (AUTOSMART_INVOICE_DATABASE)
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {sheets.map((s, idx) => (
+                <div
+                  key={s.name}
+                  className="p-3.5 rounded-xl border border-slate-200 bg-white"
+                >
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="font-mono text-xs font-bold text-[#800020]">
+                      {idx + 1}. {s.name}
+                    </span>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      Aktif
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    {s.desc}
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
-        {/* Row 2: Step-by-Step Tutorial Copas Setup.gs & Code.gs */}
-        <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-5">
-          <div className="border-b border-slate-100 pb-3.5">
-            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#800020]">
-              <BookOpen className="w-4 h-4" />
-              <span>Panduan Lengkap Langkah Demi Langkah</span>
-            </div>
-            <h3 className="text-base font-bold text-[#101B35] mt-1">
-              Tutorial Cara Copas & Pasang Setup.gs + Code.gs di Google Apps Script
+        {/* Activity Logs Audit Trail */}
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-4 sm:px-6 py-4 border-b border-slate-200">
+            <h3 className="text-sm font-bold text-[#101B35]">
+              Log Aktivitas Sistem Terbaru (ACTIVITY_LOGS)
             </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Ikuti 6 langkah berurutan di bawah ini untuk menjadikan Google Sheets Anda sebagai server & database penyimpanan nota Autosmart Invoice secara permanen:
+            <p className="text-xs text-slate-500">
+              Pencatatan otomatis aktivitas pembuatan invoice, pembayaran, dan
+              perubahan pengaturan.
             </p>
           </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
-            {/* Langkah 1 */}
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="px-2.5 py-0.5 rounded bg-[#101B35] text-[#C5A15B] font-mono font-bold text-[11px]">
-                  LANGKAH 1
-                </span>
-                <span className="font-mono text-[11px] text-slate-500">
-                  Google Sheets
-                </span>
-              </div>
-              <div className="font-bold text-[#101B35]">
-                Buat Spreadsheet & Buka Apps Script
-              </div>
-              <p className="text-slate-600 leading-relaxed">
-                1. Buka <span className="font-mono font-semibold text-[#101B35]">sheets.new</span> di browser untuk membuat Google Spreadsheet baru, lalu beri nama{' '}
-                <strong className="font-mono text-[#800020]">AUTOSMART_INVOICE_DATABASE</strong>.
-                <br />
-                2. Klik menu atas <strong>Extensions (Ekstensi)</strong> &rarr;{' '}
-                <strong>Apps Script</strong>.
-              </p>
-            </div>
-
-            {/* Langkah 2 */}
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="px-2.5 py-0.5 rounded bg-[#101B35] text-[#C5A15B] font-mono font-bold text-[11px]">
-                  LANGKAH 2
-                </span>
-                <span className="font-mono text-[11px] text-slate-500">
-                  File 1: Setup.gs
-                </span>
-              </div>
-              <div className="font-bold text-[#101B35]">
-                Buat File Setup.gs & Copas Kodenya
-              </div>
-              <p className="text-slate-600 leading-relaxed">
-                1. Di panel kiri Apps Script (bagian <strong>Files</strong>), klik ikon{' '}
-                <strong>+ (Tambah File)</strong> &rarr; pilih <strong>Script</strong>.
-                <br />
-                2. Ketik nama file <strong className="font-mono text-[#101B35]">Setup</strong> (otomatis menjadi <span className="font-mono">Setup.gs</span>).
-                <br />
-                3. Hapus isi bawaannya, klik tombol <strong>&ldquo;Copas Setup.gs&rdquo;</strong> di atas, lalu tempel (<strong>Ctrl+V</strong>) ke dalam <span className="font-mono">Setup.gs</span>.
-              </p>
-            </div>
-
-            {/* Langkah 3 */}
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="px-2.5 py-0.5 rounded bg-[#101B35] text-[#C5A15B] font-mono font-bold text-[11px]">
-                  LANGKAH 3
-                </span>
-                <span className="font-mono text-[11px] text-slate-500">
-                  File 2: Code.gs
-                </span>
-              </div>
-              <div className="font-bold text-[#101B35]">
-                Buka File Code.gs & Copas Kodenya
-              </div>
-              <p className="text-slate-600 leading-relaxed">
-                1. Klik file bawaan <strong className="font-mono text-[#101B35]">Code.gs</strong> (atau <span className="font-mono">Kode.gs</span>) di panel kiri Apps Script.
-                <br />
-                2. Hapus seluruh tulisan <span className="font-mono">function myFunction() &#123;&#125;</span>.
-                <br />
-                3. Pilih tab <strong>&ldquo;2. Code.gs&rdquo;</strong> di atas, klik <strong>&ldquo;Copas Code.gs&rdquo;</strong>, lalu tempel (<strong>Ctrl+V</strong>) dan tekan <strong>Ctrl+S</strong> (Simpan).
-              </p>
-            </div>
-
-            {/* Langkah 4 */}
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="px-2.5 py-0.5 rounded bg-[#800020] text-white font-mono font-bold text-[11px]">
-                  LANGKAH 4
-                </span>
-                <span className="font-mono text-[11px] text-slate-500">
-                  Inisialisasi 8 Sheet
-                </span>
-              </div>
-              <div className="font-bold text-[#101B35]">
-                Jalankan setupAutosmartDatabase()
-              </div>
-              <p className="text-slate-600 leading-relaxed">
-                1. Klik kembali file <span className="font-mono font-semibold">Setup.gs</span>, pastikan dropdown fungsi di toolbar atas terpilih{' '}
-                <strong className="font-mono text-[#800020]">setupAutosmartDatabase</strong>, lalu klik tombol <strong>&#9655; Run (Jalankan)</strong>.
-                <br />
-                2. Saat muncul izin akses: klik <strong>Review permissions</strong> &rarr; pilih akun Google Anda &rarr; klik <strong>Advanced</strong> &rarr; <strong>Go to project (unsafe)</strong> &rarr; <strong>Allow</strong>.
-              </p>
-            </div>
-
-            {/* Langkah 5 */}
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="px-2.5 py-0.5 rounded bg-[#800020] text-white font-mono font-bold text-[11px]">
-                  LANGKAH 5
-                </span>
-                <span className="font-mono text-[11px] text-slate-500">
-                  Publish Server API
-                </span>
-              </div>
-              <div className="font-bold text-[#101B35]">
-                Deploy sebagai Web App
-              </div>
-              <p className="text-slate-600 leading-relaxed">
-                1. Klik tombol biru <strong>Deploy (Terapkan)</strong> di kanan atas &rarr; pilih <strong>New deployment</strong>.
-                <br />
-                2. Klik ikon roda gigi (Select type) &rarr; pilih <strong>Web app</strong>.
-                <br />
-                3. Atur <strong>Execute as:</strong> <span className="font-mono font-semibold">Me (Email Anda)</span> dan <strong>Who has access:</strong>{' '}
-                <strong className="text-[#800020]">Anyone (Siapa saja)</strong>, lalu klik <strong>Deploy</strong>.
-              </p>
-            </div>
-
-            {/* Langkah 6 */}
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="px-2.5 py-0.5 rounded bg-emerald-800 text-white font-mono font-bold text-[11px]">
-                  LANGKAH 6
-                </span>
-                <span className="font-mono text-[11px] text-emerald-800 font-semibold">
-                  Selesai & Aktif!
-                </span>
-              </div>
-              <div className="font-bold text-[#101B35]">
-                Tempel URL Web App ke Aplikasi Ini
-              </div>
-              <p className="text-slate-600 leading-relaxed">
-                1. Salin <strong>Web app URL</strong> yang berakhiran <span className="font-mono font-semibold text-[#101B35]">/exec</span>.
-                <br />
-                2. Tempelkan pada kolom <strong>&ldquo;URL Web App Google Apps Script&rdquo;</strong> di sebelah kiri atas halaman ini.
-                <br />
-                3. Klik <strong>&ldquo;1. Uji Koneksi (Ping)&rdquo;</strong> lalu klik <strong>&ldquo;2. Simpan & Hubungkan&rdquo;</strong>. Semua nota otomatis masuk ke Google Sheets!
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* GitHub Repository & Vercel Deployment Integration Panel */}
-        <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-wider text-[#800020]">
-                CI/CD & Cloud Deployment Ready
-              </div>
-              <h3 className="text-base font-bold text-[#101B35] mt-0.5">
-                Integrasi Repository GitHub & Publish ke Vercel (vercel.app)
-              </h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Proyek ini telah dikonfigurasi penuh dengan Serverless API
-                Adapter (/api/index.ts), routing SPA (vercel.json), dan GitHub
-                Actions CI (.github/workflows/ci.yml).
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 shrink-0">
-              <span className="px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 font-mono text-[11px] font-bold">
-                vercel.json: READY
-              </span>
-              <span className="px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-[#101B35] font-mono text-[11px] font-bold">
-                /api/index.ts: READY
-              </span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 text-xs">
-            {/* Step 1: Push ke Repository GitHub */}
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-[#101B35]">
-                  1. Push Source Code ke Repository GitHub
-                </span>
-                <span className="font-mono text-[11px] text-slate-500">
-                  Git + GitHub Actions CI
-                </span>
-              </div>
-              <p className="text-slate-600 leading-relaxed">
-                Jalankan perintah Git berikut pada terminal proyek Anda untuk
-                mengunggah seluruh aplikasi ke repository GitHub:
-              </p>
-              <pre className="p-3 rounded-lg bg-[#101B35] text-slate-100 font-mono text-[11px] overflow-x-auto leading-relaxed">{`git init
-git add .
-git commit -m "feat: release Autosmart Invoice & Billing System"
-git branch -M main
-git remote add origin https://github.com/USERNAME/autosmart-invoice.git
-git push -u origin main`}</pre>
-            </div>
-
-            {/* Step 2: Publish Otomatis ke Vercel.app */}
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-[#101B35]">
-                  2. Publish & Deploy ke Domain *.vercel.app
-                </span>
-                <span className="font-mono text-[11px] text-[#800020] font-semibold">
-                  Serverless Express + Vite
-                </span>
-              </div>
-              <ol className="list-decimal list-inside space-y-1.5 text-slate-600 leading-relaxed">
-                <li>
-                  Buka dashboard <strong className="text-[#101B35]">Vercel</strong> (vercel.com/new) dan pilih{' '}
-                  <strong className="text-[#101B35]">Import Git Repository</strong> dari GitHub Anda.
-                </li>
-                <li>
-                  Framework Preset otomatis terdeteksi sebagai{' '}
-                  <span className="font-mono font-semibold text-[#101B35]">Vite</span>{' '}
-                  (Build: <span className="font-mono">npm run build</span>, Output:{' '}
-                  <span className="font-mono">dist</span>).
-                </li>
-                <li>
-                  Tambahkan <strong className="text-[#101B35]">Environment Variables</strong> opsional di Vercel untuk sinkronisasi Google Sheets permanen:
-                  <div className="mt-1.5 p-2.5 rounded bg-white border border-slate-200 font-mono text-[11px] text-[#101B35] space-y-1">
-                    <div>GAS_WEB_APP_URL = https://script.google.com/macros/s/.../exec</div>
-                    <div>GAS_API_SECRET = autosmart-secret-key</div>
-                  </div>
-                </li>
-                <li>
-                  Klik <strong className="text-[#800020]">Deploy</strong> — aplikasi langsung aktif di{' '}
-                  <span className="font-mono font-semibold text-[#101B35]">
-                    https://nama-project-anda.vercel.app
+          <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto">
+            {activityLogs.map((log) => (
+              <div
+                key={log.id}
+                className="px-4 sm:px-6 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs"
+              >
+                <div className="flex flex-wrap items-center gap-2 min-w-0">
+                  <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-[#101B35] shrink-0">
+                    {log.activity}
                   </span>
-                  .
-                </li>
-              </ol>
-            </div>
+                  <span className="text-slate-700 font-medium break-words">
+                    {log.description}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-400 font-mono shrink-0">
+                  {log.user_name || log.user_id} · {formatDateId(log.timestamp)}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>
     );
   }
 
-  // COMPANY SETTINGS & USER MANAGEMENT VIEW
+  const activeLogoPreview =
+    formState.logo_url && formState.logo_url.trim()
+      ? formState.logo_url.trim()
+      : DEFAULT_COMPANY_LOGO_URL;
+
   return (
     <div className="space-y-6">
-      {saveMessage && (
-        <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 font-semibold">
-          {saveMessage}
-        </div>
-      )}
-
-      <form onSubmit={handleSubmitSettings} className="space-y-6">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Identitas Perusahaan */}
-          <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
-            <h3 className="text-sm font-bold text-[#101B35] border-b border-slate-100 pb-2.5">
+      {/* Company Settings Form */}
+      <form
+        onSubmit={handleSettingsSubmit}
+        className="grid grid-cols-1 lg:grid-cols-2 gap-5 sm:gap-6"
+      >
+        {/* 1. Identitas Resmi Perusahaan */}
+        <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-6 space-y-4">
+          <div className="pb-3 border-b border-slate-100">
+            <h2 className="text-sm font-bold text-[#101B35]">
               1. Identitas Resmi Perusahaan
-            </h3>
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Data identitas dan logo ini ditampilkan otomatis pada Sidebar,
+              Invoice A4, Kwitansi, dan PDF.
+            </p>
+          </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                  Nama Perusahaan
-                </label>
-                <input
-                  type="text"
-                  value={formState.company_name}
-                  onChange={(e) =>
-                    handleFieldChange('company_name', e.target.value)
-                  }
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
+          <div>
+            <label
+              htmlFor="set-company-name"
+              className="block text-xs font-semibold text-[#101B35] mb-1"
+            >
+              Nama Perusahaan
+            </label>
+            <input
+              id="set-company-name"
+              type="text"
+              value={formState.company_name || ''}
+              onChange={(e) => setField('company_name', e.target.value)}
+              className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label
+                htmlFor="set-tagline"
+                className="block text-xs font-semibold text-[#101B35] mb-1"
+              >
+                Tagline Perusahaan
+              </label>
+              <input
+                id="set-tagline"
+                type="text"
+                value={formState.tagline || ''}
+                onChange={(e) => setField('tagline', e.target.value)}
+                className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="set-business-field"
+                className="block text-xs font-semibold text-[#101B35] mb-1"
+              >
+                Bidang Usaha
+              </label>
+              <input
+                id="set-business-field"
+                type="text"
+                value={formState.business_field || ''}
+                onChange={(e) => setField('business_field', e.target.value)}
+                className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label
+                htmlFor="set-whatsapp"
+                className="block text-xs font-semibold text-[#101B35] mb-1"
+              >
+                Nomor WhatsApp Perusahaan
+              </label>
+              <input
+                id="set-whatsapp"
+                type="text"
+                value={formState.whatsapp || ''}
+                onChange={(e) => setField('whatsapp', e.target.value)}
+                placeholder="085726686267"
+                className="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="set-email"
+                className="block text-xs font-semibold text-[#101B35] mb-1"
+              >
+                Email Resmi
+              </label>
+              <input
+                id="set-email"
+                type="email"
+                value={formState.email || ''}
+                onChange={(e) => setField('email', e.target.value)}
+                placeholder="autosmart2025@gmail.com"
+                className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label
+              htmlFor="set-website"
+              className="block text-xs font-semibold text-[#101B35] mb-1"
+            >
+              Website Perusahaan
+            </label>
+            <input
+              id="set-website"
+              type="text"
+              value={formState.website || ''}
+              onChange={(e) => setField('website', e.target.value)}
+              placeholder="https://autosmart-abuhafsh.github.io/Autosmart/"
+              className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+            />
+          </div>
+
+          <div>
+            <label
+              htmlFor="set-address"
+              className="block text-xs font-semibold text-[#101B35] mb-1"
+            >
+              Alamat Lengkap Perusahaan
+            </label>
+            <textarea
+              id="set-address"
+              rows={2}
+              value={formState.address || ''}
+              onChange={(e) => setField('address', e.target.value)}
+              placeholder="Alamat lengkap kantor operasional..."
+              className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+            />
+          </div>
+
+          {/* Logo Upload + Live Preview */}
+          <div className="pt-1">
+            <label className="block text-xs font-semibold text-[#101B35] mb-2">
+              Logo Perusahaan (Ditampilkan pada Sistem & Dokumen Cetak)
+            </label>
+            <div className="flex flex-wrap items-center gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200">
+              <img
+                src={activeLogoPreview}
+                alt="Pratinjau Logo Perusahaan"
+                className="w-12 h-12 rounded-lg object-contain bg-white p-1 border border-slate-200 shrink-0"
+                referrerPolicy="no-referrer"
+              />
+              <div className="flex-1 min-w-[160px]">
+                <div className="text-xs font-semibold text-[#101B35]">
+                  {formState.logo_url &&
+                  formState.logo_url !== DEFAULT_COMPANY_LOGO_URL
+                    ? 'Logo Kustom Aktif'
+                    : 'Logo Resmi Autosmart Digital Solutions'}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5">
+                  Otomatis dikompresi agar selalu tersinkronisasi dengan cepat.
+                </div>
               </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                  Tagline Perusahaan
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-white hover:bg-slate-100 text-[#101B35] border border-slate-300 cursor-pointer transition-colors">
+                  <Upload className="w-3.5 h-3.5 text-[#800020]" />
+                  <span>Ganti File Logo</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => handleFileUpload('logo_url', e)}
+                    className="hidden"
+                  />
                 </label>
-                <input
-                  type="text"
-                  value={formState.tagline}
-                  onChange={(e) => handleFieldChange('tagline', e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                  Bidang Usaha
-                </label>
-                <input
-                  type="text"
-                  value={formState.business_field}
-                  onChange={(e) =>
-                    handleFieldChange('business_field', e.target.value)
-                  }
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                  Nomor WhatsApp Perusahaan
-                </label>
-                <input
-                  type="text"
-                  value={formState.whatsapp}
-                  onChange={(e) =>
-                    handleFieldChange('whatsapp', e.target.value)
-                  }
-                  placeholder="Isi nomor WhatsApp resmi"
-                  className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                  Email Resmi
-                </label>
-                <input
-                  type="email"
-                  value={formState.email}
-                  onChange={(e) => handleFieldChange('email', e.target.value)}
-                  placeholder="Isi alamat email resmi"
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                  Website Perusahaan
-                </label>
-                <input
-                  type="text"
-                  value={formState.website}
-                  onChange={(e) => handleFieldChange('website', e.target.value)}
-                  placeholder="Isi alamat website resmi"
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                  Alamat Lengkap Perusahaan
-                </label>
-                <textarea
-                  rows={2}
-                  value={formState.address}
-                  onChange={(e) => handleFieldChange('address', e.target.value)}
-                  placeholder="Isi alamat kantor Autosmart Digital Solutions"
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                  Logo Perusahaan (Upload Gambar)
-                </label>
-                <div className="flex items-center gap-3">
-                  <label className="px-3.5 py-2 text-xs font-semibold text-[#101B35] bg-slate-100 hover:bg-slate-200 rounded-lg inline-flex items-center gap-1.5 cursor-pointer">
-                    <Upload className="w-3.5 h-3.5" />
-                    <span>Pilih File Logo</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => handleImageUpload('logo_url', e)}
-                      className="hidden"
-                    />
-                  </label>
-                  {formState.logo_url && (
+                {formState.logo_url &&
+                  formState.logo_url !== DEFAULT_COMPANY_LOGO_URL && (
                     <button
                       type="button"
-                      onClick={() => handleFieldChange('logo_url', '')}
-                      className="text-xs text-rose-600 hover:underline cursor-pointer"
+                      onClick={() =>
+                        setField('logo_url', DEFAULT_COMPANY_LOGO_URL)
+                      }
+                      className="inline-flex items-center gap-1 text-xs text-[#800020] font-semibold hover:underline cursor-pointer px-2 py-1"
                     >
-                      Hapus Logo Kustom
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Reset ke Logo Resmi</span>
                     </button>
                   )}
-                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 2. Informasi Pembayaran & Penomoran */}
+        <div className="space-y-5 sm:space-y-6">
+          <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-6 space-y-4">
+            <div className="pb-3 border-b border-slate-100">
+              <h2 className="text-sm font-bold text-[#101B35]">
+                2. Informasi Rekening Bank & QRIS
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Rekening tujuan pembayaran yang tertera otomatis pada Invoice &
+                pesan WhatsApp.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label
+                  htmlFor="set-bank-name"
+                  className="block text-xs font-semibold text-[#101B35] mb-1"
+                >
+                  Nama Bank
+                </label>
+                <input
+                  id="set-bank-name"
+                  type="text"
+                  value={formState.bank_name || ''}
+                  onChange={(e) => setField('bank_name', e.target.value)}
+                  placeholder="BCA / Mandiri / BRI / BSI"
+                  className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="set-bank-number"
+                  className="block text-xs font-semibold text-[#101B35] mb-1"
+                >
+                  Nomor Rekening
+                </label>
+                <input
+                  id="set-bank-number"
+                  type="text"
+                  value={formState.bank_account_number || ''}
+                  onChange={(e) =>
+                    setField('bank_account_number', e.target.value)
+                  }
+                  placeholder="0113593935"
+                  className="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label
+                htmlFor="set-bank-holder"
+                className="block text-xs font-semibold text-[#101B35] mb-1"
+              >
+                Nama Pemilik Rekening
+              </label>
+              <input
+                id="set-bank-holder"
+                type="text"
+                value={formState.bank_account_name || ''}
+                onChange={(e) => setField('bank_account_name', e.target.value)}
+                placeholder="Muhammad"
+                className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-[#101B35] mb-1.5">
+                Kode QRIS Pembayaran (Opsional)
+              </label>
+              <div className="flex flex-wrap items-center gap-3">
+                {formState.qris_url && (
+                  <img
+                    src={formState.qris_url}
+                    alt="Pratinjau QRIS"
+                    className="w-12 h-12 rounded-lg object-contain bg-white p-1 border border-slate-200 shrink-0"
+                  />
+                )}
+                <label className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-[#101B35] cursor-pointer">
+                  <Upload className="w-3.5 h-3.5 text-[#800020]" />
+                  <span>Upload Gambar QRIS</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => handleFileUpload('qris_url', e)}
+                    className="hidden"
+                  />
+                </label>
+                {formState.qris_url && (
+                  <button
+                    type="button"
+                    onClick={() => setField('qris_url', '')}
+                    className="text-xs text-red-600 font-semibold hover:underline cursor-pointer"
+                  >
+                    Hapus QRIS
+                  </button>
+                )}
               </div>
             </div>
           </div>
 
-          {/* Informasi Rekening Bank & Konfigurasi Invoice */}
-          <div className="space-y-6">
-            <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
-              <h3 className="text-sm font-bold text-[#101B35] border-b border-slate-100 pb-2.5">
-                2. Informasi Rekening Bank & QRIS
-              </h3>
+          <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-6 space-y-4">
+            <div className="pb-3 border-b border-slate-100">
+              <h2 className="text-sm font-bold text-[#101B35]">
+                3. Pengaturan Penomoran Dokumen & Pajak Opsional
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Format penomoran sekuensial otomatis dan penandatangan resmi.
+              </p>
+            </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                    Nama Bank
-                  </label>
-                  <input
-                    type="text"
-                    value={formState.bank_name}
-                    onChange={(e) =>
-                      handleFieldChange('bank_name', e.target.value)
-                    }
-                    placeholder="Contoh: Bank Mandiri / BCA / BSI"
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                    Nomor Rekening
-                  </label>
-                  <input
-                    type="text"
-                    value={formState.bank_account_number}
-                    onChange={(e) =>
-                      handleFieldChange('bank_account_number', e.target.value)
-                    }
-                    placeholder="Masukkan nomor rekening resmi"
-                    className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
-                  />
-                </div>
-
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                    Nama Pemilik Rekening
-                  </label>
-                  <input
-                    type="text"
-                    value={formState.bank_account_name}
-                    onChange={(e) =>
-                      handleFieldChange('bank_account_name', e.target.value)
-                    }
-                    placeholder="Atas nama rekening perusahaan"
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                  />
-                </div>
-
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                    Kode QRIS Pembayaran (Opsional)
-                  </label>
-                  <div className="flex items-center gap-3">
-                    <label className="px-3.5 py-2 text-xs font-semibold text-[#101B35] bg-slate-100 hover:bg-slate-200 rounded-lg inline-flex items-center gap-1.5 cursor-pointer">
-                      <Upload className="w-3.5 h-3.5" />
-                      <span>Upload Gambar QRIS</span>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        onChange={(e) => handleImageUpload('qris_url', e)}
-                        className="hidden"
-                      />
-                    </label>
-                    {formState.qris_url && (
-                      <button
-                        type="button"
-                        onClick={() => handleFieldChange('qris_url', '')}
-                        className="text-xs text-rose-600 hover:underline cursor-pointer"
-                      >
-                        Hapus QRIS
-                      </button>
-                    )}
-                  </div>
-                </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label
+                  htmlFor="set-inv-prefix"
+                  className="block text-xs font-semibold text-[#101B35] mb-1"
+                >
+                  Prefix Nomor Invoice
+                </label>
+                <input
+                  id="set-inv-prefix"
+                  type="text"
+                  value={formState.invoice_prefix || 'INV/ASM'}
+                  onChange={(e) => setField('invoice_prefix', e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="set-kw-prefix"
+                  className="block text-xs font-semibold text-[#101B35] mb-1"
+                >
+                  Prefix Bukti Pembayaran
+                </label>
+                <input
+                  id="set-kw-prefix"
+                  type="text"
+                  value={formState.receipt_prefix || 'KW/ASM'}
+                  onChange={(e) => setField('receipt_prefix', e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="set-doc-year"
+                  className="block text-xs font-semibold text-[#101B35] mb-1"
+                >
+                  Tahun Dokumen
+                </label>
+                <input
+                  id="set-doc-year"
+                  type="text"
+                  value={formState.document_year || '2026'}
+                  onChange={(e) => setField('document_year', e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="set-tax-enabled"
+                  className="block text-xs font-semibold text-[#101B35] mb-1"
+                >
+                  Status Pajak Default
+                </label>
+                <select
+                  id="set-tax-enabled"
+                  value={formState.tax_enabled || 'false'}
+                  onChange={(e) => setField('tax_enabled', e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg bg-white focus:outline-none focus:border-[#800020]"
+                >
+                  <option value="false">Nonaktif (Opsional)</option>
+                  <option value="true">Aktif (PPN)</option>
+                </select>
+              </div>
+              <div>
+                <label
+                  htmlFor="set-tax-rate"
+                  className="block text-xs font-semibold text-[#101B35] mb-1"
+                >
+                  Tarif Pajak Default (%)
+                </label>
+                <input
+                  id="set-tax-rate"
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={formState.tax_rate || '11'}
+                  onChange={(e) => setField('tax_rate', e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="set-signatory"
+                  className="block text-xs font-semibold text-[#101B35] mb-1"
+                >
+                  Nama Penandatangan
+                </label>
+                <input
+                  id="set-signatory"
+                  type="text"
+                  value={formState.signatory_name || ''}
+                  onChange={(e) => setField('signatory_name', e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+                />
               </div>
             </div>
 
-            <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
-              <h3 className="text-sm font-bold text-[#101B35] border-b border-slate-100 pb-2.5">
-                3. Pengaturan Penomoran Dokumen & Pajak Opsional
-              </h3>
+            <div>
+              <label
+                htmlFor="set-footer-note"
+                className="block text-xs font-semibold text-[#101B35] mb-1"
+              >
+                Catatan Footer Dokumen
+              </label>
+              <input
+                id="set-footer-note"
+                type="text"
+                value={formState.footer_note || ''}
+                onChange={(e) => setField('footer_note', e.target.value)}
+                className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+              />
+            </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                    Prefix Nomor Invoice
-                  </label>
-                  <input
-                    type="text"
-                    value={formState.invoice_prefix}
-                    onChange={(e) =>
-                      handleFieldChange('invoice_prefix', e.target.value)
-                    }
-                    className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                    Prefix Bukti Pembayaran
-                  </label>
-                  <input
-                    type="text"
-                    value={formState.receipt_prefix}
-                    onChange={(e) =>
-                      handleFieldChange('receipt_prefix', e.target.value)
-                    }
-                    className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                    Tahun Dokumen
-                  </label>
-                  <input
-                    type="text"
-                    value={formState.document_year}
-                    onChange={(e) =>
-                      handleFieldChange('document_year', e.target.value)
-                    }
-                    className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                    Status Pajak Default
-                  </label>
-                  <select
-                    value={formState.tax_enabled}
-                    onChange={(e) =>
-                      handleFieldChange('tax_enabled', e.target.value)
-                    }
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                  >
-                    <option value="false">Nonaktif (Opsional)</option>
-                    <option value="true">Aktif</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                    Tarif Pajak Default (%)
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={100}
-                    step="any"
-                    value={formState.tax_rate}
-                    onChange={(e) =>
-                      handleFieldChange('tax_rate', e.target.value)
-                    }
-                    className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                    Nama Penandatangan
-                  </label>
-                  <input
-                    type="text"
-                    value={formState.signatory_name}
-                    onChange={(e) =>
-                      handleFieldChange('signatory_name', e.target.value)
-                    }
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                  Catatan Footer Dokumen
-                </label>
-                <input
-                  type="text"
-                  value={formState.footer_note}
-                  onChange={(e) =>
-                    handleFieldChange('footer_note', e.target.value)
-                  }
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-              </div>
-
-              <div className="pt-2 flex justify-end">
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="px-5 py-2.5 text-xs font-semibold text-white bg-[#800020] hover:bg-[#660019] rounded-lg inline-flex items-center gap-2 cursor-pointer"
-                >
-                  <Save className="w-4 h-4" />
-                  <span>
-                    {saving
-                      ? 'Menyimpan Pengaturan...'
-                      : 'Simpan Pengaturan Perusahaan'}
-                  </span>
-                </button>
-              </div>
+            <div className="pt-2 flex justify-end">
+              <button
+                type="submit"
+                disabled={savingSettings}
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg text-xs font-semibold text-white bg-[#800020] hover:bg-[#670019] disabled:opacity-50 transition-colors cursor-pointer"
+              >
+                <Save className="w-4 h-4" />
+                <span>
+                  {savingSettings
+                    ? 'Menyimpan Perubahan...'
+                    : 'Simpan Pengaturan Perusahaan'}
+                </span>
+              </button>
             </div>
           </div>
         </div>
       </form>
 
-      {/* User & Role Management Section */}
-      <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
-        <div className="flex items-center justify-between">
+      {/* Role-Based User Management (USERS Sheet) */}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="px-4 sm:px-6 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-bold text-[#101B35] flex items-center gap-2">
-              <Users className="w-4 h-4 text-[#800020]" />
-              <span>Manajemen Pengguna & Hak Akses (Role-Based Access)</span>
-            </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Kelola akun Administrator dan Staff beserta pembatasan hak akses.
+            <h2 className="text-sm font-bold text-[#101B35]">
+              Manajemen Pengguna & Hak Akses (Role-Based Access)
+            </h2>
+            <p className="text-xs text-slate-500">
+              Kelola akun Administrator dan Staff pada sheet USERS. Kata sandi
+              dienkripsi menggunakan SHA-256/scrypt.
             </p>
           </div>
           <button
             type="button"
             onClick={() => setUserModalOpen(true)}
-            className="px-3.5 py-2 text-xs font-semibold text-white bg-[#101B35] hover:bg-[#1b2d55] rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold text-white bg-[#101B35] hover:bg-[#1a2b52] transition-colors cursor-pointer shrink-0"
           >
-            <Plus className="w-3.5 h-3.5 text-[#C5A15B]" />
-            <span>Tambah Pengguna</span>
+            <UserPlus className="w-3.5 h-3.5 text-[#C5A15B]" />
+            <span>Tambah Pengguna Baru</span>
           </button>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
+        {/* Desktop Table View */}
+        <div className="hidden md:block overflow-x-auto">
+          <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-500">
-                <th className="py-3 px-4">ID</th>
+              <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                <th className="py-3 px-5">ID</th>
                 <th className="py-3 px-4">Nama Lengkap</th>
-                <th className="py-3 px-4">Email</th>
-                <th className="py-3 px-4">Tingkat Akses (Role)</th>
-                <th className="py-3 px-4">Status</th>
-                <th className="py-3 px-4 text-right">Ubah Status</th>
+                <th className="py-3 px-4">Email Login</th>
+                <th className="py-3 px-4">Peran (Role)</th>
+                <th className="py-3 px-4">Status Akun</th>
+                <th className="py-3 px-5 text-right">Tindakan</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200">
+            <tbody className="divide-y divide-slate-200 text-xs">
               {users.map((u) => (
-                <tr key={u.id}>
-                  <td className="py-3 px-4 font-mono">{u.id}</td>
+                <tr key={u.id} className="hover:bg-slate-50/80">
+                  <td className="py-3 px-5 font-mono text-slate-500">{u.id}</td>
                   <td className="py-3 px-4 font-semibold text-[#101B35]">
                     {u.name}
                   </td>
-                  <td className="py-3 px-4 font-mono">{u.email}</td>
-                  <td className="py-3 px-4 font-semibold text-[#800020]">
-                    {u.role}
+                  <td className="py-3 px-4 font-mono text-slate-600">
+                    {u.email}
                   </td>
                   <td className="py-3 px-4">
                     <span
-                      className={`font-semibold ${
+                      className={`px-2.5 py-0.5 rounded text-[11px] font-semibold ${
+                        u.role === 'Administrator'
+                          ? 'bg-[#800020]/10 text-[#800020]'
+                          : 'bg-slate-100 text-slate-700'
+                      }`}
+                    >
+                      {u.role}
+                    </span>
+                  </td>
+                  <td className="py-3 px-4">
+                    <span
+                      className={`px-2 py-0.5 rounded text-[11px] font-semibold ${
                         u.status === 'Aktif'
-                          ? 'text-emerald-700'
-                          : 'text-slate-400'
+                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                          : 'bg-slate-100 text-slate-500 border border-slate-200'
                       }`}
                     >
                       {u.status}
                     </span>
                   </td>
-                  <td className="py-3 px-4 text-right">
-                    {u.id !== currentUser.id && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onUpdateUser(u.id, {
-                            status:
-                              u.status === 'Aktif' ? 'Nonaktif' : 'Aktif',
-                          })
-                        }
-                        className="text-xs font-semibold text-[#101B35] hover:underline cursor-pointer"
-                      >
-                        {u.status === 'Aktif' ? 'Nonaktifkan' : 'Aktifkan'}
-                      </button>
-                    )}
+                  <td className="py-3 px-5 text-right">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdateUser(u.id, {
+                          status: u.status === 'Aktif' ? 'Nonaktif' : 'Aktif',
+                        })
+                      }
+                      className="text-xs font-semibold text-[#800020] hover:underline cursor-pointer"
+                    >
+                      {u.status === 'Aktif' ? 'Nonaktifkan' : 'Aktifkan'}
+                    </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+
+        {/* Mobile Card View */}
+        <div className="md:hidden divide-y divide-slate-200">
+          {users.map((u) => (
+            <div key={u.id} className="p-4 space-y-2">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-xs font-bold text-[#101B35] truncate">
+                    {u.name}
+                  </div>
+                  <div className="text-[11px] font-mono text-slate-500 truncate">
+                    {u.email}
+                  </div>
+                </div>
+                <span
+                  className={`px-2 py-0.5 rounded text-[10px] font-semibold shrink-0 ${
+                    u.status === 'Aktif'
+                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                      : 'bg-slate-100 text-slate-500 border border-slate-200'
+                  }`}
+                >
+                  {u.status}
+                </span>
+              </div>
+              <div className="flex items-center justify-between pt-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[10px] text-slate-400">
+                    {u.id}
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                      u.role === 'Administrator'
+                        ? 'bg-[#800020]/10 text-[#800020]'
+                        : 'bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    {u.role}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateUser(u.id, {
+                      status: u.status === 'Aktif' ? 'Nonaktif' : 'Aktif',
+                    })
+                  }
+                  className="text-xs font-semibold text-[#800020] hover:underline cursor-pointer"
+                >
+                  {u.status === 'Aktif' ? 'Nonaktifkan' : 'Aktifkan'}
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -1394,70 +1426,77 @@ git push -u origin main`}</pre>
           role="dialog"
           aria-modal="true"
         >
-          <div className="bg-white rounded-xl border border-slate-200 w-full max-w-md p-6">
-            <h3 className="text-sm font-bold text-[#101B35] mb-4">
-              Tambah Pengguna Baru
-            </h3>
-            {userError && (
-              <div className="mb-3 p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
-                {userError}
-              </div>
-            )}
-            <form onSubmit={handleAddUser} className="space-y-3">
+          <div className="bg-white rounded-xl border border-slate-200 w-full max-w-md overflow-hidden">
+            <div className="px-5 py-4 bg-[#101B35] text-white flex items-center justify-between">
+              <h3 className="text-sm font-bold">Tambah Pengguna Sistem Baru</h3>
+              <button
+                type="button"
+                onClick={() => setUserModalOpen(false)}
+                className="text-slate-300 hover:text-white text-xs cursor-pointer"
+              >
+                Tutup
+              </button>
+            </div>
+            <form onSubmit={handleCreateUserSubmit} className="p-5 space-y-4">
+              {userError && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                  {userError}
+                </div>
+              )}
               <div>
                 <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                  Nama Lengkap *
+                  Nama Lengkap
                 </label>
                 <input
                   type="text"
                   required
-                  value={newUserName}
-                  onChange={(e) => setNewUserName(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
+                  value={userName}
+                  onChange={(e) => setUserName(e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg"
                 />
               </div>
               <div>
                 <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                  Email *
+                  Email Login
                 </label>
                 <input
                   type="email"
                   required
-                  value={newUserEmail}
-                  onChange={(e) => setNewUserEmail(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
+                  value={userEmail}
+                  onChange={(e) => setUserEmail(e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg"
                 />
               </div>
               <div>
                 <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                  Kata Sandi *
+                  Kata Sandi Awal
                 </label>
                 <input
                   type="password"
                   required
-                  value={newUserPassword}
-                  onChange={(e) => setNewUserPassword(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
+                  value={userPassword}
+                  onChange={(e) => setUserPassword(e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg"
                 />
               </div>
               <div>
                 <label className="block text-xs font-semibold text-[#101B35] mb-1">
-                  Role Akses
+                  Hak Akses (Role)
                 </label>
                 <select
-                  value={newUserRole}
-                  onChange={(e) =>
-                    setNewUserRole(
-                      e.target.value as 'Administrator' | 'Staff'
-                    )
-                  }
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
+                  value={userRole}
+                  onChange={(e) => setUserRole(e.target.value as UserRole)}
+                  className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg bg-white"
                 >
-                  <option value="Staff">Staff</option>
-                  <option value="Administrator">Administrator</option>
+                  <option value="Staff">
+                    Staff (Operasional Invoice & Pembayaran)
+                  </option>
+                  <option value="Administrator">
+                    Administrator (Akses Penuh)
+                  </option>
                 </select>
               </div>
-              <div className="pt-3 flex justify-end gap-2">
+              <div className="pt-2 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setUserModalOpen(false)}
@@ -1467,9 +1506,10 @@ git push -u origin main`}</pre>
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 text-xs font-semibold text-white bg-[#800020] hover:bg-[#660019] rounded-lg cursor-pointer"
+                  disabled={savingUser}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-[#800020] hover:bg-[#670019] rounded-lg cursor-pointer"
                 >
-                  Simpan Pengguna
+                  {savingUser ? 'Menyimpan...' : 'Simpan Pengguna'}
                 </button>
               </div>
             </form>

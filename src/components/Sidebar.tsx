@@ -1,9 +1,9 @@
 import React from 'react';
 import {
   LayoutDashboard,
+  FileText,
   Users,
   Briefcase,
-  FileText,
   CreditCard,
   BarChart3,
   Settings,
@@ -37,7 +37,6 @@ interface SidebarProps {
   onLogout: () => void;
   mobileOpen: boolean;
   onCloseMobile: () => void;
-  onToggleDemoMode: (enabled: boolean) => Promise<void>;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -49,11 +48,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onLogout,
   mobileOpen,
   onCloseMobile,
-  onToggleDemoMode,
 }) => {
-  const isDemoActive =
-    databaseStatus.demo_mode !== false &&
-    databaseStatus.mode !== 'LIVE_LOCAL';
+  const isAdmin = currentUser.role === 'Administrator';
+
   const navItems: Array<{
     id: NavTab;
     label: string;
@@ -76,12 +73,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'database',
       label: 'Koneksi Google Sheets',
       icon: Database,
+      adminOnly: true,
     },
   ];
 
-  const visibleItems = navItems.filter(
-    (item) => !item.adminOnly || currentUser.role === 'Administrator'
-  );
+  const visibleItems = navItems.filter((item) => !item.adminOnly || isAdmin);
 
   const handleNavClick = (id: NavTab) => {
     onSelectTab(id);
@@ -93,123 +89,90 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Mobile Backdrop */}
       {mobileOpen && (
         <div
-          className="fixed inset-0 bg-black/50 z-40 lg:hidden no-print"
+          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
           onClick={onCloseMobile}
           aria-hidden="true"
         />
       )}
 
       <aside
-        className={`fixed lg:sticky lg:top-0 lg:h-screen inset-y-0 left-0 z-50 w-68 bg-[#101B35] text-white flex flex-col justify-between shrink-0 transition-transform duration-200 ease-out no-print ${
-          mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+        className={`fixed inset-y-0 left-0 z-50 w-64 bg-[#101B35] text-white flex flex-col border-r border-white/10 transition-transform duration-200 lg:static lg:translate-x-0 shrink-0 ${
+          mobileOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div>
-          {/* Top Brand Lockup */}
-          <div className="p-5 border-b border-white/10 flex items-center justify-between gap-2">
+        {/* Brand Header */}
+        <div className="p-4 sm:p-5 border-b border-white/10 flex items-center justify-between gap-2">
+          <div className="min-w-0 flex-1">
             <BrandLogo
+              companyName={settings.company_name}
+              tagline={settings.tagline}
               logoUrl={settings.logo_url}
-              companyName={
-                settings.company_name || 'Autosmart Digital Solutions'
-              }
-              tagline={
-                settings.tagline || 'Skill Up For Digital Collaboration'
-              }
               variant="light"
-              size="sm"
+              size="md"
             />
-            <button
-              type="button"
-              onClick={onCloseMobile}
-              aria-label="Tutup navigasi"
-              className="lg:hidden p-1.5 text-slate-300 hover:text-white rounded-lg"
-            >
-              <X className="w-5 h-5" />
-            </button>
           </div>
-
-          {/* Primary Navigation */}
-          <nav className="p-3 space-y-1" aria-label="Menu Utama">
-            {visibleItems.map((item) => {
-              const Icon = item.icon;
-              const isActive = activeTab === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => handleNavClick(item.id)}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                    isActive
-                      ? 'bg-[#800020] text-white'
-                      : 'text-slate-300 hover:bg-white/8 hover:text-white'
-                  }`}
-                >
-                  <Icon
-                    className={`w-4 h-4 shrink-0 ${
-                      isActive ? 'text-[#C5A15B]' : 'text-slate-400'
-                    }`}
-                  />
-                  <span className="truncate">{item.label}</span>
-                </button>
-              );
-            })}
-          </nav>
+          <button
+            type="button"
+            onClick={onCloseMobile}
+            aria-label="Tutup menu navigasi"
+            className="lg:hidden p-1.5 text-slate-400 hover:text-white rounded-md shrink-0 cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
 
-        {/* Bottom Database Status & User Profile */}
-        <div className="p-4 border-t border-white/10 space-y-3">
-          <div className="p-3 rounded-lg bg-white/5 border border-white/10 space-y-2">
-            <button
-              type="button"
-              onClick={() => handleNavClick('database')}
-              className="w-full text-left cursor-pointer"
-            >
-              <div className="flex items-center justify-between text-xs font-semibold text-white mb-0.5">
-                <span>Status Database</span>
-                <span
-                  className={
-                    databaseStatus.mode === 'GOOGLE_SHEETS'
-                      ? 'text-emerald-400'
-                      : isDemoActive
-                        ? 'text-[#C5A15B]'
-                        : 'text-emerald-400'
-                  }
-                >
-                  {databaseStatus.mode === 'GOOGLE_SHEETS'
-                    ? 'SHEETS'
-                    : isDemoActive
-                      ? 'DEMO: ON'
-                      : 'FRESH / BERSIH'}
-                </span>
-              </div>
-              <div className="text-[11px] text-slate-300 truncate">
-                {databaseStatus.mode === 'GOOGLE_SHEETS'
-                  ? 'Google Sheets Terhubung'
-                  : isDemoActive
-                    ? 'Menampilkan Data Simulasi Demo'
-                    : 'Mode Data Bersih (Demo OFF)'}
-              </div>
-            </button>
+        {/* Navigation Links */}
+        <nav
+          className="flex-1 px-3 py-4 space-y-1 overflow-y-auto"
+          aria-label="Navigasi Utama"
+        >
+          {visibleItems.map((item) => {
+            const Icon = item.icon;
+            const active = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => handleNavClick(item.id)}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-[#800020] text-white font-semibold'
+                    : 'text-slate-300 hover:bg-white/5 hover:text-white'
+                }`}
+              >
+                <Icon
+                  className={`w-4 h-4 shrink-0 ${
+                    active ? 'text-[#C5A15B]' : 'text-slate-400'
+                  }`}
+                />
+                <span className="truncate">{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
 
-            <button
-              type="button"
-              data-testid="sidebar-toggle-demo-btn"
-              onClick={() => onToggleDemoMode(!isDemoActive)}
-              className={`w-full py-1.5 px-2.5 rounded-md text-[11px] font-semibold transition-colors cursor-pointer flex items-center justify-between ${
-                isDemoActive
-                  ? 'bg-[#800020] hover:bg-[#660019] text-white'
-                  : 'bg-emerald-800/70 hover:bg-emerald-700 text-emerald-100'
-              }`}
-            >
-              <span>
-                {isDemoActive
-                  ? 'Matikan Mode Demo'
-                  : 'Hidupkan Mode Demo'}
+        {/* Clean Database Connection Indicator & User Footer */}
+        <div className="p-4 border-t border-white/10 space-y-3 bg-[#0B1326]">
+          <div className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-xs">
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="text-slate-300 font-semibold">
+                Penyimpanan Data
               </span>
-              <span className="font-mono text-[10px] opacity-90">
-                {isDemoActive ? 'BERSIHKAN' : 'SIMULASI'}
+              <span
+                className={`text-[10px] font-semibold uppercase tracking-wider ${
+                  databaseStatus.connected
+                    ? 'text-emerald-400'
+                    : 'text-[#C5A15B]'
+                }`}
+              >
+                {databaseStatus.connected ? 'GOOGLE SHEETS' : 'AKTIF'}
               </span>
-            </button>
+            </div>
+            <div className="text-[11px] text-slate-400 truncate">
+              {databaseStatus.connected
+                ? 'Tersinkronisasi ke Google Sheets'
+                : 'Database Persisten Autosmart'}
+            </div>
           </div>
 
           <div className="flex items-center justify-between gap-2 pt-1">
@@ -224,9 +187,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <button
               type="button"
               onClick={onLogout}
-              aria-label="Keluar dari sistem"
-              title="Keluar dari sistem"
-              className="p-2 text-slate-300 hover:text-white hover:bg-white/10 rounded-lg transition-colors shrink-0 cursor-pointer"
+              title="Keluar dari sesi"
+              aria-label="Keluar dari sesi"
+              className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors shrink-0 cursor-pointer"
             >
               <LogOut className="w-4 h-4" />
             </button>

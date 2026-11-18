@@ -42,44 +42,21 @@ interface GasLocalConfig {
   webAppUrl: string;
   apiSecret: string;
   lastSync: string | null;
-  demoMode?: boolean;
 }
 
-const DEMO_CLIENT_IDS = new Set([
-  'CLT-0001',
-  'CLT-0002',
-  'CLT-0003',
-  'CLT-0004',
-]);
-const DEMO_INVOICE_IDS = new Set([
-  'INV-0001',
-  'INV-0002',
-  'INV-0003',
-  'INV-0004',
-]);
-const DEMO_ITEM_IDS = new Set([
-  'ITM-0001',
-  'ITM-0002',
-  'ITM-0003',
-  'ITM-0004',
-  'ITM-0005',
-  'ITM-0006',
-]);
-const DEMO_PAYMENT_IDS = new Set(['PAY-0001', 'PAY-0002', 'PAY-0003']);
-const DEMO_LOG_IDS = new Set(['LOG-0001', 'LOG-0002']);
-
-const DEFAULT_SETTINGS: CompanySettingsMap = {
+export const DEFAULT_SETTINGS: CompanySettingsMap = {
   company_name: 'Autosmart Digital Solutions',
   tagline: 'Skill Up For Digital Collaboration',
   business_field: 'Digital Learning & Business Solution',
-  address: '',
-  whatsapp: '',
-  email: '',
-  website: '',
-  logo_url: '',
-  bank_name: '',
-  bank_account_name: '',
-  bank_account_number: '',
+  address:
+    'Jl. Brigjen Slamet Riadi VIII/56 Kec. Klojen Kel. Oro-Oro Dowo Kota Malang, Jawa Timur 65112, Indonesia.',
+  whatsapp: '085726686267',
+  email: 'autosmart2025@gmail.com',
+  website: 'https://autosmart-abuhafsh.github.io/Autosmart/',
+  logo_url: '/assets/autosmart-logo.png',
+  bank_name: 'BCA',
+  bank_account_name: 'Muhammad',
+  bank_account_number: '0113593935',
   qris_url: '',
   invoice_prefix: 'INV/ASM',
   receipt_prefix: 'KW/ASM',
@@ -114,8 +91,6 @@ export function loadLocalGasConfig(): GasLocalConfig {
         webAppUrl: parsed.webAppUrl || envUrl,
         apiSecret: parsed.apiSecret || '',
         lastSync: parsed.lastSync || null,
-        demoMode:
-          parsed.demoMode !== undefined ? Boolean(parsed.demoMode) : true,
       };
     }
   } catch {
@@ -125,7 +100,6 @@ export function loadLocalGasConfig(): GasLocalConfig {
     webAppUrl: envUrl,
     apiSecret: '',
     lastSync: null,
-    demoMode: true,
   };
 }
 
@@ -156,53 +130,6 @@ function createSeedState(): LocalDbState {
       role: 'Staff',
       status: 'Aktif',
       created_at: '2026-01-05T00:00:00.000Z',
-    },
-  ];
-
-  const CLIENTS: Client[] = [
-    {
-      id: 'CLT-0001',
-      client_name: 'PT Nusantara Logistik Mandiri',
-      contact_person: 'Hendra Wijaya',
-      phone: '081234567801',
-      whatsapp: '6281234567801',
-      email: 'hendra@nusantaralogistik.co.id',
-      address: 'Jl. Jenderal Sudirman Kav. 45, Jakarta Selatan',
-      notes: 'Klien korporat layanan Business Dashboard & Maintenance.',
-      created_at: '2026-09-01T09:00:00.000Z',
-    },
-    {
-      id: 'CLT-0002',
-      client_name: 'CV Al-Haramain Tour & Travel',
-      contact_person: 'H. Ahmad Fauzi',
-      phone: '081398765402',
-      whatsapp: '6281398765402',
-      email: 'info@alharamaintour.id',
-      address: 'Jl. KH. Ahmad Dahlan No. 28, Bandung',
-      notes: 'Pengembangan Website Travel & Umroh dengan pembayaran bertahap.',
-      created_at: '2026-09-15T10:00:00.000Z',
-    },
-    {
-      id: 'CLT-0003',
-      client_name: 'PT Kreasi Ritel Indonesia',
-      contact_person: 'Rina Kusuma',
-      phone: '081122334455',
-      whatsapp: '6281122334455',
-      email: 'rina.kusuma@kreasiritel.id',
-      address: 'Kawasan Niaga Terpadu Blok B2, Surabaya',
-      notes: 'Proyek E-Commerce dan Sistem Otomatisasi Bisnis.',
-      created_at: '2026-10-01T08:30:00.000Z',
-    },
-    {
-      id: 'CLT-0004',
-      client_name: 'Klinik Utama Medika Prima',
-      contact_person: 'dr. Farhan Pratama',
-      phone: '081566778899',
-      whatsapp: '6281566778899',
-      email: 'manajemen@medikaprima.co.id',
-      address: 'Jl. Diponegoro No. 112, Semarang',
-      notes: 'Pembuatan Website Company Profile dan Google Apps Script.',
-      created_at: '2026-10-12T11:15:00.000Z',
     },
   ];
 
@@ -297,222 +224,15 @@ function createSeedState(): LocalDbState {
     },
   ];
 
-  const INVOICE_ITEMS: InvoiceLineItem[] = [
-    {
-      id: 'ITM-0001',
-      invoice_id: 'INV-0001',
-      service_id: 'SRV-0008',
-      description: 'Executive Business Dashboard - Modul Analitik & Operasional',
-      quantity: 1,
-      unit: 'Sistem',
-      unit_price: 6500000,
-      discount: 0,
-      total: 6500000,
-    },
-    {
-      id: 'ITM-0002',
-      invoice_id: 'INV-0001',
-      service_id: 'SRV-0014',
-      description: 'Maintenance & Keamanan Website Tahunan',
-      quantity: 1,
-      unit: 'Tahun',
-      unit_price: 3600000,
-      discount: 0,
-      total: 3600000,
-    },
-    {
-      id: 'ITM-0003',
-      invoice_id: 'INV-0002',
-      service_id: 'SRV-0005',
-      description: 'Website Travel & Manajemen Umroh Terintegrasi',
-      quantity: 1,
-      unit: 'Paket',
-      unit_price: 14500000,
-      discount: 0,
-      total: 14500000,
-    },
-    {
-      id: 'ITM-0004',
-      invoice_id: 'INV-0003',
-      service_id: 'SRV-0011',
-      description: 'Sistem Otomatisasi Bisnis Terpadu',
-      quantity: 1,
-      unit: 'Sistem',
-      unit_price: 8000000,
-      discount: 0,
-      total: 8000000,
-    },
-    {
-      id: 'ITM-0005',
-      invoice_id: 'INV-0004',
-      service_id: 'SRV-0003',
-      description: 'Website Company Profile Eksklusif',
-      quantity: 1,
-      unit: 'Paket',
-      unit_price: 5500000,
-      discount: 0,
-      total: 5500000,
-    },
-    {
-      id: 'ITM-0006',
-      invoice_id: 'INV-0004',
-      service_id: 'SRV-0007',
-      description: 'Google Apps Script Automation Suite',
-      quantity: 1,
-      unit: 'Sistem',
-      unit_price: 4500000,
-      discount: 0,
-      total: 4500000,
-    },
-  ];
-
-  const INVOICES: Invoice[] = [
-    {
-      id: 'INV-0001',
-      invoice_number: 'INV/ASM/2026/0001',
-      client_id: 'CLT-0001',
-      issue_date: '2026-10-05',
-      due_date: '2026-10-20',
-      subtotal: 10100000,
-      discount: 100000,
-      additional_cost: 0,
-      tax_rate: 0,
-      tax_amount: 0,
-      grand_total: 10000000,
-      amount_paid: 10000000,
-      balance: 0,
-      status: 'Paid',
-      notes: 'Pengembangan Executive Business Dashboard & Maintenance 1 Tahun.',
-      created_at: '2026-10-05T09:00:00.000Z',
-      updated_at: '2026-10-18T14:00:00.000Z',
-    },
-    {
-      id: 'INV-0002',
-      invoice_number: 'INV/ASM/2026/0002',
-      client_id: 'CLT-0002',
-      issue_date: '2026-11-01',
-      due_date: '2026-11-25',
-      subtotal: 14500000,
-      discount: 500000,
-      additional_cost: 0,
-      tax_rate: 0,
-      tax_amount: 0,
-      grand_total: 14000000,
-      amount_paid: 7000000,
-      balance: 7000000,
-      status: 'Partially Paid',
-      notes:
-        'Pembayaran Termin 1 (DP 50%) telah diterima. Pelunasan saat UAT selesai.',
-      created_at: '2026-11-01T10:00:00.000Z',
-      updated_at: '2026-11-02T15:30:00.000Z',
-    },
-    {
-      id: 'INV-0003',
-      invoice_number: 'INV/ASM/2026/0003',
-      client_id: 'CLT-0003',
-      issue_date: '2026-10-10',
-      due_date: '2026-10-28',
-      subtotal: 8000000,
-      discount: 0,
-      additional_cost: 0,
-      tax_rate: 0,
-      tax_amount: 0,
-      grand_total: 8000000,
-      amount_paid: 0,
-      balance: 8000000,
-      status: 'Overdue',
-      notes: 'Implementasi Sistem Otomatisasi Bisnis Terpadu.',
-      created_at: '2026-10-10T08:00:00.000Z',
-      updated_at: '2026-10-10T08:00:00.000Z',
-    },
-    {
-      id: 'INV-0004',
-      invoice_number: 'INV/ASM/2026/0004',
-      client_id: 'CLT-0004',
-      issue_date: '2026-11-05',
-      due_date: '2026-11-20',
-      subtotal: 10000000,
-      discount: 0,
-      additional_cost: 0,
-      tax_rate: 0,
-      tax_amount: 0,
-      grand_total: 10000000,
-      amount_paid: 0,
-      balance: 10000000,
-      status: 'Unpaid',
-      notes:
-        'Pembuatan Website Company Profile Eksklusif & Google Apps Script Automation.',
-      created_at: '2026-11-05T11:00:00.000Z',
-      updated_at: '2026-11-05T11:00:00.000Z',
-    },
-  ];
-
-  const PAYMENTS: Payment[] = [
-    {
-      id: 'PAY-0001',
-      receipt_number: 'KW/ASM/2026/0001',
-      invoice_id: 'INV-0001',
-      payment_date: '2026-10-06',
-      amount: 5000000,
-      payment_method: 'Transfer Bank',
-      reference_number: 'TRF-20261006-01',
-      notes: 'Pembayaran DP 50% Proyek Executive Business Dashboard',
-      created_at: '2026-10-06T10:15:00.000Z',
-    },
-    {
-      id: 'PAY-0002',
-      receipt_number: 'KW/ASM/2026/0002',
-      invoice_id: 'INV-0001',
-      payment_date: '2026-10-18',
-      amount: 5000000,
-      payment_method: 'Transfer Bank',
-      reference_number: 'TRF-20261018-09',
-      notes: 'Pelunasan 100% Proyek Executive Business Dashboard',
-      created_at: '2026-10-18T14:00:00.000Z',
-    },
-    {
-      id: 'PAY-0003',
-      receipt_number: 'KW/ASM/2026/0003',
-      invoice_id: 'INV-0002',
-      payment_date: '2026-11-02',
-      amount: 7000000,
-      payment_method: 'Transfer Bank',
-      reference_number: 'TRF-20261102-04',
-      notes: 'Down Payment (DP 50%) Website Travel & Manajemen Umroh',
-      created_at: '2026-11-02T15:30:00.000Z',
-    },
-  ];
-
-  const ACTIVITY_LOGS: ActivityLog[] = [
-    {
-      id: 'LOG-0001',
-      user_id: 'USR-0001',
-      user_name: 'Administrator Autosmart',
-      activity: 'CREATE_INVOICE',
-      description:
-        'Menerbitkan invoice INV/ASM/2026/0001 untuk PT Nusantara Logistik Mandiri',
-      timestamp: '2026-10-05T09:00:00.000Z',
-    },
-    {
-      id: 'LOG-0002',
-      user_id: 'USR-0001',
-      user_name: 'Administrator Autosmart',
-      activity: 'RECORD_PAYMENT',
-      description:
-        'Mencatat pembayaran KW/ASM/2026/0002 sebesar Rp 5.000.000 (Lunas)',
-      timestamp: '2026-10-18T14:00:00.000Z',
-    },
-  ];
-
   return {
     USERS,
-    CLIENTS,
+    CLIENTS: [],
     SERVICES,
-    INVOICES,
-    INVOICE_ITEMS,
-    PAYMENTS,
+    INVOICES: [],
+    INVOICE_ITEMS: [],
+    PAYMENTS: [],
     SETTINGS: { ...DEFAULT_SETTINGS },
-    ACTIVITY_LOGS,
+    ACTIVITY_LOGS: [],
   };
 }
 
@@ -522,6 +242,15 @@ export function loadLocalDb(): LocalDbState {
     if (raw) {
       const parsed = JSON.parse(raw) as LocalDbState;
       if (parsed && Array.isArray(parsed.USERS) && parsed.USERS.length > 0) {
+        const mergedSettings: CompanySettingsMap = { ...DEFAULT_SETTINGS };
+        if (parsed.SETTINGS) {
+          for (const [k, v] of Object.entries(parsed.SETTINGS)) {
+            if (typeof v === 'string' && v.trim() !== '') {
+              mergedSettings[k] = v;
+            }
+          }
+        }
+        parsed.SETTINGS = mergedSettings;
         return recomputeLocalDb(parsed);
       }
     }
@@ -550,30 +279,79 @@ export function mirrorBootstrapToLocalDb(boot: {
   settings?: CompanySettingsMap;
   users?: User[];
   activityLogs?: ActivityLog[];
-}): void {
+}): {
+  mergedSettings: CompanySettingsMap;
+  customSettingsToPush: Partial<CompanySettingsMap> | null;
+} {
   const current = loadLocalDb();
   if (Array.isArray(boot.clients)) current.CLIENTS = boot.clients;
   if (Array.isArray(boot.services)) current.SERVICES = boot.services;
   if (Array.isArray(boot.invoices)) {
-    current.INVOICES = boot.invoices.map(({ items: _it, client: _cl, ...rest }) => rest);
+    current.INVOICES = boot.invoices.map(
+      ({ items: _it, client: _cl, ...rest }) => rest
+    );
     const allItems: InvoiceLineItem[] = [];
     for (const inv of boot.invoices) {
       if (Array.isArray(inv.items)) {
         allItems.push(...inv.items);
       }
     }
-    if (allItems.length > 0) {
-      current.INVOICE_ITEMS = allItems;
-    }
+    current.INVOICE_ITEMS = allItems;
   }
   if (Array.isArray(boot.payments)) current.PAYMENTS = boot.payments;
-  if (boot.settings) {
-    current.SETTINGS = { ...DEFAULT_SETTINGS, ...boot.settings };
+
+  const mergedSettings: CompanySettingsMap = {
+    ...DEFAULT_SETTINGS,
+  };
+  const customToPush: Partial<CompanySettingsMap> = {};
+  let hasCustomToPush = false;
+
+  // Apply local custom settings first
+  if (current.SETTINGS) {
+    for (const [k, v] of Object.entries(current.SETTINGS)) {
+      if (typeof v === 'string' && v.trim() !== '') {
+        mergedSettings[k] = v;
+      }
+    }
   }
+
+  // Apply server settings, but if local had a custom uploaded data:image logo/qris while server only has default/empty, keep local and push to server
+  if (boot.settings) {
+    for (const [k, serverVal] of Object.entries(boot.settings)) {
+      const cleanServer = typeof serverVal === 'string' ? serverVal.trim() : '';
+      const cleanLocal =
+        typeof current.SETTINGS?.[k] === 'string'
+          ? current.SETTINGS[k]!.trim()
+          : '';
+
+      if (
+        (k === 'logo_url' || k === 'qris_url') &&
+        cleanLocal.startsWith('data:image/') &&
+        (!cleanServer || cleanServer === '/assets/autosmart-logo.png')
+      ) {
+        mergedSettings[k] = cleanLocal;
+        customToPush[k] = cleanLocal;
+        hasCustomToPush = true;
+      } else if (cleanServer !== '') {
+        mergedSettings[k] = cleanServer;
+      } else if (cleanLocal !== '' && cleanLocal !== DEFAULT_SETTINGS[k]) {
+        mergedSettings[k] = cleanLocal;
+        customToPush[k] = cleanLocal;
+        hasCustomToPush = true;
+      }
+    }
+  }
+
+  current.SETTINGS = mergedSettings;
   if (Array.isArray(boot.activityLogs)) {
     current.ACTIVITY_LOGS = boot.activityLogs;
   }
   saveLocalDb(current);
+
+  return {
+    mergedSettings,
+    customSettingsToPush: hasCustomToPush ? customToPush : null,
+  };
 }
 
 function recomputeLocalDb(db: LocalDbState): LocalDbState {
@@ -743,14 +521,8 @@ export async function handleClientFallbackApi(
       client: db.CLIENTS.find((c) => c.id === inv.client_id),
     }));
 
-    const isDemo = cfg.demoMode !== false;
     const databaseStatus: DatabaseStatus = {
-      mode: cfg.webAppUrl
-        ? 'GOOGLE_SHEETS'
-        : isDemo
-          ? 'DEMO_LOCAL'
-          : 'LIVE_LOCAL',
-      demo_mode: isDemo,
+      mode: cfg.webAppUrl ? 'GOOGLE_SHEETS' : 'LOCAL_STORAGE',
       connected: Boolean(cfg.webAppUrl),
       spreadsheet_name: 'AUTOSMART_INVOICE_DATABASE',
       gas_url_configured: Boolean(cfg.webAppUrl),
@@ -758,9 +530,7 @@ export async function handleClientFallbackApi(
       last_sync: cfg.lastSync,
       message: cfg.webAppUrl
         ? 'Terhubung ke Google Sheets melalui Google Apps Script'
-        : isDemo
-          ? 'Mode DEMO Aktif — Menampilkan data contoh simulasi (Matikan Mode Demo untuk data bersih/fresh)'
-          : 'Mode Data Bersih (Fresh / Live) Aktif — Seluruh data simulasi demo telah dimatikan',
+        : 'Database Persisten Aktif (Siap disinkronkan ke Google Sheets)',
     };
 
     return {
@@ -1261,68 +1031,12 @@ export async function handleClientFallbackApi(
       webAppUrl: String(body.webAppUrl || '').trim(),
       apiSecret: String(body.apiSecret || '').trim(),
       lastSync: cfg.lastSync,
-      demoMode: cfg.demoMode,
     };
     saveLocalGasConfig(nextCfg);
     if (nextCfg.webAppUrl) {
       await syncLocalDbToGasIfConfigured(db);
     }
     return { ok: true };
-  }
-
-  if (url === '/api/database/demo-mode' && method === 'POST') {
-    const enabled = Boolean(body.enabled);
-    const resetAll = Boolean(body.resetAll);
-    cfg.demoMode = enabled;
-    saveLocalGasConfig(cfg);
-
-    if (!enabled) {
-      if (resetAll) {
-        db.CLIENTS = [];
-        db.INVOICES = [];
-        db.INVOICE_ITEMS = [];
-        db.PAYMENTS = [];
-        db.ACTIVITY_LOGS = [];
-      } else {
-        db.CLIENTS = db.CLIENTS.filter((c) => !DEMO_CLIENT_IDS.has(c.id));
-        db.INVOICES = db.INVOICES.filter((i) => !DEMO_INVOICE_IDS.has(i.id));
-        db.INVOICE_ITEMS = db.INVOICE_ITEMS.filter(
-          (it) =>
-            !DEMO_ITEM_IDS.has(it.id) && !DEMO_INVOICE_IDS.has(it.invoice_id)
-        );
-        db.PAYMENTS = db.PAYMENTS.filter(
-          (p) =>
-            !DEMO_PAYMENT_IDS.has(p.id) && !DEMO_INVOICE_IDS.has(p.invoice_id)
-        );
-        db.ACTIVITY_LOGS = db.ACTIVITY_LOGS.filter(
-          (l) => !DEMO_LOG_IDS.has(l.id)
-        );
-      }
-    } else {
-      const seed = createSeedState();
-      const existingClientIds = new Set(db.CLIENTS.map((c) => c.id));
-      for (const c of seed.CLIENTS) {
-        if (!existingClientIds.has(c.id)) db.CLIENTS.push(c);
-      }
-      const existingInvoiceIds = new Set(db.INVOICES.map((i) => i.id));
-      for (const inv of seed.INVOICES) {
-        if (!existingInvoiceIds.has(inv.id)) db.INVOICES.push(inv);
-      }
-      const existingItemIds = new Set(db.INVOICE_ITEMS.map((it) => it.id));
-      for (const it of seed.INVOICE_ITEMS) {
-        if (!existingItemIds.has(it.id)) db.INVOICE_ITEMS.push(it);
-      }
-      const existingPaymentIds = new Set(db.PAYMENTS.map((p) => p.id));
-      for (const p of seed.PAYMENTS) {
-        if (!existingPaymentIds.has(p.id)) db.PAYMENTS.push(p);
-      }
-    }
-
-    saveLocalDb(db);
-    return {
-      ok: true,
-      demo_mode: enabled,
-    };
   }
 
   if (url === '/api/database/test' && method === 'POST') {

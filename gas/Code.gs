@@ -145,6 +145,9 @@ function handleRequest_(e, method) {
 function sanitizeCell_(val) {
   if (typeof val !== 'string') return val;
   var trimmed = val.trim();
+  if (trimmed.length > 49000) {
+    trimmed = trimmed.slice(0, 49000);
+  }
   if (/^[=+\\-@]/.test(trimmed)) {
     return "'" + trimmed;
   }
@@ -191,7 +194,6 @@ function readSheetRows_(ss, sheetName) {
 
 function writeSheetRows_(ss, sheetName, headers, records) {
   var sheet = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
-  sheet.clearContents();
   var matrix = [headers];
 
   for (var i = 0; i < records.length; i++) {
@@ -204,6 +206,7 @@ function writeSheetRows_(ss, sheetName, headers, records) {
     matrix.push(row);
   }
 
+  sheet.clearContents();
   sheet.getRange(1, 1, matrix.length, headers.length).setValues(matrix);
   var headerRange = sheet.getRange(1, 1, 1, headers.length);
   headerRange.setBackground('#101B35');

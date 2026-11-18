@@ -4,363 +4,437 @@ import {
   Search,
   Edit3,
   Trash2,
-  History,
-  X,
   Phone,
   Mail,
   MapPin,
-  FileText,
+  X,
 } from 'lucide-react';
-import type { Client, Invoice, Payment } from '../types/invoice';
-import { formatDateId, formatRupiah } from '../utils/invoiceLogic';
+import type { Client, Invoice } from '../types/invoice';
+import { formatRupiah } from '../utils/invoiceLogic';
 
 interface ClientManagementProps {
   clients: Client[];
   invoices: Invoice[];
-  payments: Payment[];
-  onCreateClient: (payload: Partial<Client>) => Promise<void>;
-  onUpdateClient: (id: string, payload: Partial<Client>) => Promise<void>;
+  onCreateClient: (payload: Omit<Client, 'id' | 'created_at'>) => Promise<void>;
+  onUpdateClient: (
+    id: string,
+    payload: Omit<Client, 'id' | 'created_at'>
+  ) => Promise<void>;
   onDeleteClient: (id: string) => Promise<void>;
-  onPreviewInvoice: (invoice: Invoice) => void;
 }
+
+const EMPTY_FORM = {
+  client_name: '',
+  contact_person: '',
+  phone: '',
+  whatsapp: '',
+  email: '',
+  address: '',
+  notes: '',
+};
 
 export const ClientManagement: React.FC<ClientManagementProps> = ({
   clients,
   invoices,
-  payments,
   onCreateClient,
   onUpdateClient,
   onDeleteClient,
-  onPreviewInvoice,
 }) => {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [currentPage, setCurrentPage] = useState(1);
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
   const pageSize = 8;
 
-  // Form Modal State
-  const [formOpen, setFormOpen] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
-  const [clientName, setClientName] = useState('');
-  const [contactPerson, setContactPerson] = useState('');
-  const [phone, setPhone] = useState('');
-  const [whatsapp, setWhatsapp] = useState('');
-  const [email, setEmail] = useState('');
-  const [address, setAddress] = useState('');
-  const [notes, setNotes] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState('');
+  const [formData, setFormData] = useState(EMPTY_FORM);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
-  // History Modal State
-  const [historyClient, setHistoryClient] = useState<Client | null>(null);
-  // Delete Confirmation State
-  const [deleteTarget, setDeleteTarget] = useState<Client | null>(null);
-  const [deleteError, setDeleteError] = useState('');
-
-  const clientFinancialMap = useMemo(() => {
-    const map: Record<
-      string,
-      {
-        invoiceCount: number;
-        totalTransaction: number;
-        totalPaid: number;
-        totalBalance: number;
-      }
-    > = {};
-
-    for (const c of clients) {
-      const clientInvs = invoices.filter(
-        (inv) => inv.client_id === c.id && inv.status !== 'Cancelled'
-      );
-      const totalTransaction = clientInvs.reduce(
-        (s, i) => s + i.grand_total,
-        0
-      );
-      const totalPaid = clientInvs.reduce((s, i) => s + i.amount_paid, 0);
-      const totalBalance = clientInvs.reduce((s, i) => s + i.balance, 0);
-
-      map[c.id] = {
-        invoiceCount: clientInvs.length,
-        totalTransaction,
-        totalPaid,
-        totalBalance,
-      };
-    }
-    return map;
-  }, [clients, invoices]);
-
-  const filteredClients = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
     if (!q) return clients;
     return clients.filter(
       (c) =>
         c.client_name.toLowerCase().includes(q) ||
         c.contact_person.toLowerCase().includes(q) ||
-        c.id.toLowerCase().includes(q) ||
         c.phone.toLowerCase().includes(q) ||
-        c.email.toLowerCase().includes(q)
+        c.email.toLowerCase().includes(q) ||
+        c.id.toLowerCase().includes(q)
     );
-  }, [clients, searchQuery]);
+  }, [clients, search]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredClients.length / pageSize));
-  const paginatedClients = filteredClients.slice(
-    (currentPage - 1) * pageSize,
-    currentPage * pageSize
-  );
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const paginated = filtered.slice((page - 1) * pageSize, page * pageSize);
 
-  const openCreateModal = () => {
+  const clientStats = useMemo(() => {
+    const map: Record<string, { count: number; totalBilled: number }> = {};
+    for (const inv of invoices) {
+      if (inv.status === 'Cancelled') continue;
+      if (!map[inv.client_id]) {
+        map[inv.client_id] = { count: 0, totalBilled: 0 };
+      }
+      map[inv.client_id].count += 1;
+      map[inv.client_id].totalBilled += Number(inv.grand_total) || 0;
+    }
+    return map;
+  }, [invoices]);
+
+  const openAddModal = () => {
     setEditingClient(null);
-    setClientName('');
-    setContactPerson('');
-    setPhone('');
-    setWhatsapp('');
-    setEmail('');
-    setAddress('');
-    setNotes('');
-    setFormError('');
-    setFormOpen(true);
+    setFormData(EMPTY_FORM);
+    setError('');
+    setModalOpen(true);
   };
 
   const openEditModal = (client: Client) => {
     setEditingClient(client);
-    setClientName(client.client_name);
-    setContactPerson(client.contact_person);
-    setPhone(client.phone);
-    setWhatsapp(client.whatsapp);
-    setEmail(client.email);
-    setAddress(client.address);
-    setNotes(client.notes);
-    setFormError('');
-    setFormOpen(true);
+    setFormData({
+      client_name: client.client_name,
+      contact_person: client.contact_person,
+      phone: client.phone,
+      whatsapp: client.whatsapp,
+      email: client.email,
+      address: client.address,
+      notes: client.notes,
+    });
+    setError('');
+    setModalOpen(true);
   };
 
-  const handleSaveClient = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setFormError('');
-    if (!clientName.trim()) {
-      setFormError('Nama pelanggan / perusahaan wajib diisi.');
+    setError('');
+    if (!formData.client_name.trim()) {
+      setError('Nama pelanggan / perusahaan wajib diisi.');
       return;
     }
 
-    setSubmitting(true);
+    setSaving(true);
     try {
-      const payload = {
-        client_name: clientName.trim(),
-        contact_person: contactPerson.trim(),
-        phone: phone.trim(),
-        whatsapp: (whatsapp.trim() || phone.trim()),
-        email: email.trim(),
-        address: address.trim(),
-        notes: notes.trim(),
-      };
       if (editingClient) {
-        await onUpdateClient(editingClient.id, payload);
+        await onUpdateClient(editingClient.id, formData);
       } else {
-        await onCreateClient(payload);
+        await onCreateClient(formData);
       }
-      setFormOpen(false);
+      setModalOpen(false);
     } catch (err) {
-      setFormError(
+      setError(
         err instanceof Error ? err.message : 'Gagal menyimpan data pelanggan.'
       );
     } finally {
-      setSubmitting(false);
+      setSaving(false);
     }
   };
 
-  const handleConfirmDelete = async () => {
-    if (!deleteTarget) return;
-    setDeleteError('');
+  const handleConfirmDelete = async (id: string) => {
+    setError('');
     try {
-      await onDeleteClient(deleteTarget.id);
-      setDeleteTarget(null);
+      await onDeleteClient(id);
+      setConfirmDeleteId(null);
     } catch (err) {
-      setDeleteError(
+      setError(
         err instanceof Error ? err.message : 'Gagal menghapus pelanggan.'
       );
+      setConfirmDeleteId(null);
     }
   };
 
-  const clientInvoices = useMemo(() => {
-    if (!historyClient) return [];
-    return invoices.filter((i) => i.client_id === historyClient.id);
-  }, [historyClient, invoices]);
-
-  const clientPayments = useMemo(() => {
-    if (!historyClient) return [];
-    const invIds = new Set(clientInvoices.map((i) => i.id));
-    return payments.filter((p) => invIds.has(p.invoice_id));
-  }, [historyClient, clientInvoices, payments]);
-
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-5">
       {/* Header & Search Bar */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="bg-white rounded-xl border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3.5">
         <div>
-          <h2 className="text-base font-bold text-[#101B35]">
-            Manajemen Pelanggan & Klien Korporat
+          <h2 className="text-sm font-bold text-[#101B35]">
+            Daftar Pelanggan & Mitra Korporat
           </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Kelola informasi kontak, riwayat invoice, total pembayaran, dan sisa
-            tagihan setiap klien.
+          <p className="text-xs text-slate-500">
+            Kelola profil perusahaan klien, kontak PIC, alamat penagihan, dan
+            nomor WhatsApp.
           </p>
         </div>
 
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-          <div className="relative">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+          <div className="relative flex-1 sm:w-64">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
-              type="search"
-              value={searchQuery}
+              type="text"
+              value={search}
               onChange={(e) => {
-                setSearchQuery(e.target.value);
-                setCurrentPage(1);
+                setSearch(e.target.value);
+                setPage(1);
               }}
-              placeholder="Cari nama, kontak, atau ID klien..."
-              aria-label="Cari pelanggan"
-              className="w-full sm:w-64 pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-[#101B35] focus:outline-none focus:bg-white focus:border-[#800020]"
+              placeholder="Cari nama klien, PIC, telepon..."
+              className="w-full pl-9 pr-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
             />
           </div>
-
           <button
             type="button"
-            onClick={openCreateModal}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#800020] hover:bg-[#660019] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            onClick={openAddModal}
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 sm:py-2 rounded-lg text-xs font-semibold text-white bg-[#800020] hover:bg-[#670019] transition-colors shrink-0 cursor-pointer"
           >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Tambah Pelanggan</span>
+            <Plus className="w-4 h-4" />
+            <span>Tambah Pelanggan Baru</span>
           </button>
         </div>
       </div>
 
-      {/* Clients Table */}
+      {error && (
+        <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-medium">
+          {error}
+        </div>
+      )}
+
+      {/* Client Table & Mobile Cards */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50/70 text-[11px] font-semibold text-slate-500">
-                <th className="py-3.5 px-4">ID Klien</th>
-                <th className="py-3.5 px-4">Nama Pelanggan / Perusahaan</th>
-                <th className="py-3.5 px-4">Kontak & WhatsApp</th>
-                <th className="py-3.5 px-4 text-right">Total Transaksi</th>
-                <th className="py-3.5 px-4 text-right">Total Dibayar</th>
-                <th className="py-3.5 px-4 text-right">Sisa Tagihan</th>
-                <th className="py-3.5 px-4 text-right">Tindakan</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 text-xs">
-              {paginatedClients.map((client) => {
-                const stats = clientFinancialMap[client.id] || {
-                  invoiceCount: 0,
-                  totalTransaction: 0,
-                  totalPaid: 0,
-                  totalBalance: 0,
+        {paginated.length === 0 ? (
+          <div className="py-10 px-4 text-center text-xs text-slate-500">
+            Tidak ada data pelanggan yang sesuai dengan pencarian.
+          </div>
+        ) : (
+          <>
+            {/* Desktop Table */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                    <th className="py-3 px-5">ID</th>
+                    <th className="py-3 px-4">Nama Pelanggan / Perusahaan</th>
+                    <th className="py-3 px-4">Contact Person (PIC)</th>
+                    <th className="py-3 px-4">Kontak & WhatsApp</th>
+                    <th className="py-3 px-4">Alamat</th>
+                    <th className="py-3 px-4 text-right">Riwayat Transaksi</th>
+                    <th className="py-3 px-5 text-right">Tindakan</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 text-xs">
+                  {paginated.map((client) => {
+                    const stats = clientStats[client.id] || {
+                      count: 0,
+                      totalBilled: 0,
+                    };
+                    return (
+                      <tr
+                        key={client.id}
+                        className="hover:bg-slate-50/80 transition-colors"
+                      >
+                        <td className="py-3.5 px-5 font-mono text-slate-500 whitespace-nowrap">
+                          {client.id}
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <div className="font-bold text-[#101B35]">
+                            {client.client_name}
+                          </div>
+                          {client.notes && (
+                            <div className="text-[11px] text-slate-500 mt-0.5 line-clamp-1">
+                              {client.notes}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-4 font-medium text-slate-700">
+                          {client.contact_person || '-'}
+                        </td>
+                        <td className="py-3.5 px-4 space-y-0.5">
+                          {client.whatsapp && (
+                            <div className="flex items-center gap-1.5 font-mono text-slate-700">
+                              <Phone className="w-3 h-3 text-emerald-700 shrink-0" />
+                              <span>{client.whatsapp}</span>
+                            </div>
+                          )}
+                          {client.email && (
+                            <div className="flex items-center gap-1.5 text-slate-500">
+                              <Mail className="w-3 h-3 text-slate-400 shrink-0" />
+                              <span>{client.email}</span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-600 max-w-xs">
+                          <div className="flex items-start gap-1.5">
+                            <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
+                            <span className="line-clamp-2">
+                              {client.address || '-'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                          <div className="font-mono font-semibold text-[#101B35] tabular-nums">
+                            {formatRupiah(stats.totalBilled)}
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            {stats.count} invoice
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-5 text-right whitespace-nowrap">
+                          {confirmDeleteId === client.id ? (
+                            <div className="inline-flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleConfirmDelete(client.id)}
+                                className="px-2 py-1 rounded bg-red-600 text-white text-[11px] font-semibold hover:bg-red-700 cursor-pointer"
+                              >
+                                Hapus
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteId(null)}
+                                className="px-2 py-1 rounded bg-slate-100 text-slate-600 text-[11px] font-semibold hover:bg-slate-200 cursor-pointer"
+                              >
+                                Batal
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="inline-flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => openEditModal(client)}
+                                title="Edit Pelanggan"
+                                className="p-1.5 rounded-lg text-slate-600 hover:text-[#101B35] hover:bg-slate-100 cursor-pointer"
+                              >
+                                <Edit3 className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteId(client.id)}
+                                title="Hapus Pelanggan"
+                                className="p-1.5 rounded-lg text-slate-500 hover:text-red-600 hover:bg-red-50 cursor-pointer"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile Card View */}
+            <div className="md:hidden divide-y divide-slate-200">
+              {paginated.map((client) => {
+                const stats = clientStats[client.id] || {
+                  count: 0,
+                  totalBilled: 0,
                 };
                 return (
-                  <tr
-                    key={client.id}
-                    className="hover:bg-slate-50/80 transition-colors"
-                  >
-                    <td className="py-3.5 px-4 font-mono font-semibold text-[#101B35] whitespace-nowrap">
-                      {client.id}
-                    </td>
-                    <td className="py-3.5 px-4">
-                      <div className="font-semibold text-[#101B35]">
-                        {client.client_name}
+                  <div key={client.id} className="p-4 space-y-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <span className="font-mono text-[10px] text-slate-400">
+                          {client.id}
+                        </span>
+                        <div className="text-sm font-bold text-[#101B35] break-words">
+                          {client.client_name}
+                        </div>
+                        {client.contact_person && (
+                          <div className="text-xs text-slate-600">
+                            PIC: {client.contact_person}
+                          </div>
+                        )}
                       </div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">
-                        {client.contact_person || '-'} · Terdaftar{' '}
-                        {formatDateId(client.created_at)}
+                      <div className="text-right shrink-0">
+                        <div className="font-mono text-xs font-bold text-[#101B35] tabular-nums">
+                          {formatRupiah(stats.totalBilled)}
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          {stats.count} invoice
+                        </div>
                       </div>
-                    </td>
-                    <td className="py-3.5 px-4">
-                      <div className="font-mono text-slate-700">
-                        {client.whatsapp || client.phone || '-'}
+                    </div>
+
+                    <div className="space-y-1 text-xs text-slate-600">
+                      {(client.whatsapp || client.phone) && (
+                        <div className="flex items-center gap-1.5 font-mono">
+                          <Phone className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                          <span>{client.whatsapp || client.phone}</span>
+                        </div>
+                      )}
+                      {client.email && (
+                        <div className="flex items-center gap-1.5 break-all">
+                          <Mail className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <span>{client.email}</span>
+                        </div>
+                      )}
+                      {client.address && (
+                        <div className="flex items-start gap-1.5">
+                          <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
+                          <span>{client.address}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {confirmDeleteId === client.id ? (
+                      <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+                        <span className="text-xs text-red-700 font-semibold">
+                          Hapus pelanggan ini?
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleConfirmDelete(client.id)}
+                            className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-semibold cursor-pointer"
+                          >
+                            Ya, Hapus
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(null)}
+                            className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-semibold cursor-pointer"
+                          >
+                            Batal
+                          </button>
+                        </div>
                       </div>
-                      <div className="text-[11px] text-slate-500 truncate max-w-[180px]">
-                        {client.email || '-'}
-                      </div>
-                    </td>
-                    <td className="py-3.5 px-4 text-right font-mono tabular-nums font-medium text-[#101B35] whitespace-nowrap">
-                      {formatRupiah(stats.totalTransaction)}
-                    </td>
-                    <td className="py-3.5 px-4 text-right font-mono tabular-nums font-medium text-emerald-700 whitespace-nowrap">
-                      {formatRupiah(stats.totalPaid)}
-                    </td>
-                    <td className="py-3.5 px-4 text-right font-mono tabular-nums font-semibold text-[#800020] whitespace-nowrap">
-                      {formatRupiah(stats.totalBalance)}
-                    </td>
-                    <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setHistoryClient(client)}
-                          title={`Riwayat transaksi ${client.client_name}`}
-                          className="px-2.5 py-1.5 text-xs font-medium text-[#101B35] bg-slate-100 hover:bg-slate-200 rounded-md inline-flex items-center gap-1 cursor-pointer"
-                        >
-                          <History className="w-3.5 h-3.5" />
-                          <span>Riwayat ({stats.invoiceCount})</span>
-                        </button>
+                    ) : (
+                      <div className="flex items-center justify-end gap-2 pt-1">
                         <button
                           type="button"
                           onClick={() => openEditModal(client)}
-                          aria-label={`Edit pelanggan ${client.client_name}`}
-                          className="p-1.5 text-slate-600 hover:text-[#101B35] hover:bg-slate-100 rounded-md cursor-pointer"
+                          className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-[#101B35] text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
                         >
                           <Edit3 className="w-3.5 h-3.5" />
+                          <span>Edit</span>
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            setDeleteError('');
-                            setDeleteTarget(client);
-                          }}
-                          aria-label={`Hapus pelanggan ${client.client_name}`}
-                          className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-md cursor-pointer"
+                          onClick={() => setConfirmDeleteId(client.id)}
+                          className="px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
+                          <span>Hapus</span>
                         </button>
                       </div>
-                    </td>
-                  </tr>
+                    )}
+                  </div>
                 );
               })}
-              {paginatedClients.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={7}
-                    className="py-10 text-center text-xs text-slate-500"
-                  >
-                    Belum ada data pelanggan yang sesuai dengan pencarian.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+            </div>
+          </>
+        )}
 
         {/* Pagination Footer */}
-        <div className="px-4 py-3 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500">
-          <div>
-            Menampilkan {paginatedClients.length} dari {filteredClients.length}{' '}
-            pelanggan
-          </div>
-          <div className="flex items-center gap-2">
+        <div className="px-4 sm:px-5 py-3 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500">
+          <span>
+            Menampilkan {paginated.length} dari {filtered.length} pelanggan
+          </span>
+          <div className="flex items-center gap-1.5">
             <button
               type="button"
-              disabled={currentPage <= 1}
-              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-              className="px-3 py-1 rounded border border-slate-200 disabled:opacity-40 hover:bg-slate-50 cursor-pointer"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className="px-2.5 py-1 rounded border border-slate-200 disabled:opacity-40 hover:bg-slate-50 cursor-pointer"
             >
               Sebelumnya
             </button>
-            <span className="font-mono">
-              Halaman {currentPage} / {totalPages}
+            <span className="px-2 font-semibold text-[#101B35]">
+              Halaman {page} / {totalPages}
             </span>
             <button
               type="button"
-              disabled={currentPage >= totalPages}
-              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-              className="px-3 py-1 rounded border border-slate-200 disabled:opacity-40 hover:bg-slate-50 cursor-pointer"
+              disabled={page >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              className="px-2.5 py-1 rounded border border-slate-200 disabled:opacity-40 hover:bg-slate-50 cursor-pointer"
             >
               Berikutnya
             </button>
@@ -369,34 +443,39 @@ export const ClientManagement: React.FC<ClientManagementProps> = ({
       </div>
 
       {/* Add / Edit Client Modal */}
-      {formOpen && (
+      {modalOpen && (
         <div
-          className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
           role="dialog"
           aria-modal="true"
-          aria-labelledby="client-modal-title"
+          aria-label={
+            editingClient ? 'Edit Data Pelanggan' : 'Tambah Pelanggan Baru'
+          }
         >
-          <div className="bg-white rounded-xl border border-slate-200 w-full max-w-lg overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-[#101B35] text-white">
-              <h3 id="client-modal-title" className="text-sm font-bold">
+          <div className="bg-white rounded-xl border border-slate-200 w-full max-w-lg max-h-[92vh] flex flex-col overflow-hidden">
+            <div className="px-4 sm:px-6 py-4 bg-[#101B35] text-white flex items-center justify-between shrink-0">
+              <h3 className="text-sm font-bold">
                 {editingClient
                   ? `Edit Pelanggan — ${editingClient.id}`
                   : 'Tambah Pelanggan Baru'}
               </h3>
               <button
                 type="button"
-                onClick={() => setFormOpen(false)}
-                aria-label="Tutup form pelanggan"
-                className="p-1 text-slate-300 hover:text-white rounded"
+                onClick={() => setModalOpen(false)}
+                aria-label="Tutup modal"
+                className="p-1 text-slate-300 hover:text-white rounded cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveClient} className="p-6 space-y-4">
-              {formError && (
+            <form
+              onSubmit={handleSubmit}
+              className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1"
+            >
+              {error && (
                 <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-medium">
-                  {formError}
+                  {error}
                 </div>
               )}
 
@@ -412,27 +491,34 @@ export const ClientManagement: React.FC<ClientManagementProps> = ({
                     id="client-name-input"
                     type="text"
                     required
-                    value={clientName}
-                    onChange={(e) => setClientName(e.target.value)}
-                    placeholder="Contoh: PT Maju Digital Nusantara"
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+                    value={formData.client_name}
+                    onChange={(e) =>
+                      setFormData({ ...formData, client_name: e.target.value })
+                    }
+                    placeholder="Contoh: PT Nusantara Logistik Mandiri"
+                    className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
                   />
                 </div>
 
                 <div>
                   <label
-                    htmlFor="client-contact-input"
+                    htmlFor="client-pic-input"
                     className="block text-xs font-semibold text-[#101B35] mb-1"
                   >
-                    Nama Kontak (PIC)
+                    Contact Person (PIC)
                   </label>
                   <input
-                    id="client-contact-input"
+                    id="client-pic-input"
                     type="text"
-                    value={contactPerson}
-                    onChange={(e) => setContactPerson(e.target.value)}
+                    value={formData.contact_person}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        contact_person: e.target.value,
+                      })
+                    }
                     placeholder="Nama penanggung jawab"
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+                    className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
                   />
                 </div>
 
@@ -441,15 +527,17 @@ export const ClientManagement: React.FC<ClientManagementProps> = ({
                     htmlFor="client-email-input"
                     className="block text-xs font-semibold text-[#101B35] mb-1"
                   >
-                    Email
+                    Alamat Email
                   </label>
                   <input
                     id="client-email-input"
                     type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="email@perusahaan.co.id"
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+                    value={formData.email}
+                    onChange={(e) =>
+                      setFormData({ ...formData, email: e.target.value })
+                    }
+                    placeholder="billing@perusahaan.co.id"
+                    className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
                   />
                 </div>
 
@@ -463,10 +551,12 @@ export const ClientManagement: React.FC<ClientManagementProps> = ({
                   <input
                     id="client-phone-input"
                     type="text"
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    placeholder="0812xxxxxxxx"
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg font-mono focus:outline-none focus:border-[#800020]"
+                    value={formData.phone}
+                    onChange={(e) =>
+                      setFormData({ ...formData, phone: e.target.value })
+                    }
+                    placeholder="081234567890"
+                    className="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
                   />
                 </div>
 
@@ -480,10 +570,12 @@ export const ClientManagement: React.FC<ClientManagementProps> = ({
                   <input
                     id="client-wa-input"
                     type="text"
-                    value={whatsapp}
-                    onChange={(e) => setWhatsapp(e.target.value)}
-                    placeholder="62812xxxxxxxx"
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg font-mono focus:outline-none focus:border-[#800020]"
+                    value={formData.whatsapp}
+                    onChange={(e) =>
+                      setFormData({ ...formData, whatsapp: e.target.value })
+                    }
+                    placeholder="6281234567890"
+                    className="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
                   />
                 </div>
 
@@ -492,15 +584,17 @@ export const ClientManagement: React.FC<ClientManagementProps> = ({
                     htmlFor="client-address-input"
                     className="block text-xs font-semibold text-[#101B35] mb-1"
                   >
-                    Alamat Lengkap
+                    Alamat Lengkap Penagihan
                   </label>
                   <textarea
                     id="client-address-input"
                     rows={2}
-                    value={address}
-                    onChange={(e) => setAddress(e.target.value)}
-                    placeholder="Alamat lengkap perusahaan atau domisili klien"
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+                    value={formData.address}
+                    onChange={(e) =>
+                      setFormData({ ...formData, address: e.target.value })
+                    }
+                    placeholder="Jalan, Gedung, Kota, Provinsi"
+                    className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
                   />
                 </div>
 
@@ -509,284 +603,38 @@ export const ClientManagement: React.FC<ClientManagementProps> = ({
                     htmlFor="client-notes-input"
                     className="block text-xs font-semibold text-[#101B35] mb-1"
                   >
-                    Catatan Tambahan
+                    Catatan Pelanggan
                   </label>
                   <input
                     id="client-notes-input"
                     type="text"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    placeholder="Catatan khusus kontrak atau preferensi klien"
-                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
+                    value={formData.notes}
+                    onChange={(e) =>
+                      setFormData({ ...formData, notes: e.target.value })
+                    }
+                    placeholder="Catatan proyek atau preferensi penagihan"
+                    className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
                   />
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-200 flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2.5">
                 <button
                   type="button"
-                  onClick={() => setFormOpen(false)}
+                  onClick={() => setModalOpen(false)}
                   className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting}
-                  className="px-4 py-2 text-xs font-semibold text-white bg-[#800020] hover:bg-[#660019] disabled:opacity-50 rounded-lg cursor-pointer"
+                  disabled={saving}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-[#800020] hover:bg-[#670019] disabled:opacity-50 rounded-lg transition-colors cursor-pointer"
                 >
-                  {submitting ? 'Menyimpan...' : 'Simpan Data Pelanggan'}
+                  {saving ? 'Menyimpan...' : 'Simpan Pelanggan'}
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* Client Transaction History Modal */}
-      {historyClient && (
-        <div
-          className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="bg-white rounded-xl border border-slate-200 w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-[#101B35] text-white">
-              <div>
-                <h3 className="text-sm font-bold">
-                  Riwayat Transaksi & Tagihan — {historyClient.client_name}
-                </h3>
-                <p className="text-[11px] text-[#C5A15B]">
-                  ID Pelanggan: {historyClient.id} · PIC:{' '}
-                  {historyClient.contact_person || '-'}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setHistoryClient(null)}
-                aria-label="Tutup riwayat pelanggan"
-                className="p-1 text-slate-300 hover:text-white rounded"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-6 overflow-y-auto space-y-6">
-              {/* Contact & Summary Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
-                  <div className="text-[11px] text-slate-500">
-                    Total Nilai Transaksi
-                  </div>
-                  <div className="text-lg font-bold font-mono text-[#101B35] mt-1">
-                    {formatRupiah(
-                      clientFinancialMap[historyClient.id]?.totalTransaction ||
-                        0
-                    )}
-                  </div>
-                </div>
-                <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
-                  <div className="text-[11px] text-slate-500">
-                    Total Pembayaran Diterima
-                  </div>
-                  <div className="text-lg font-bold font-mono text-emerald-700 mt-1">
-                    {formatRupiah(
-                      clientFinancialMap[historyClient.id]?.totalPaid || 0
-                    )}
-                  </div>
-                </div>
-                <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
-                  <div className="text-[11px] text-slate-500">
-                    Sisa Tagihan Aktif
-                  </div>
-                  <div className="text-lg font-bold font-mono text-[#800020] mt-1">
-                    {formatRupiah(
-                      clientFinancialMap[historyClient.id]?.totalBalance || 0
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="text-xs text-slate-600 grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-lg border border-slate-200">
-                <div className="flex items-center gap-2">
-                  <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  <span className="font-mono">
-                    {historyClient.whatsapp || historyClient.phone || '-'}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Mail className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  <span className="truncate">{historyClient.email || '-'}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  <span className="truncate">
-                    {historyClient.address || '-'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Client Invoices Table */}
-              <div>
-                <h4 className="text-xs font-bold text-[#101B35] mb-2.5 flex items-center gap-1.5">
-                  <FileText className="w-3.5 h-3.5 text-[#800020]" />
-                  <span>Daftar Invoice ({clientInvoices.length})</span>
-                </h4>
-                <div className="border border-slate-200 rounded-lg overflow-hidden">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr className="bg-slate-50 border-b border-slate-200 text-[11px] text-slate-500">
-                        <th className="py-2.5 px-3">No. Invoice</th>
-                        <th className="py-2.5 px-3">Tanggal</th>
-                        <th className="py-2.5 px-3 text-right">Grand Total</th>
-                        <th className="py-2.5 px-3 text-right">Dibayar</th>
-                        <th className="py-2.5 px-3 text-right">Sisa</th>
-                        <th className="py-2.5 px-3">Status</th>
-                        <th className="py-2.5 px-3 text-right">Aksi</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-200">
-                      {clientInvoices.map((inv) => (
-                        <tr key={inv.id}>
-                          <td className="py-2.5 px-3 font-mono font-semibold text-[#101B35]">
-                            {inv.invoice_number}
-                          </td>
-                          <td className="py-2.5 px-3 text-slate-600">
-                            {formatDateId(inv.issue_date)}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono">
-                            {formatRupiah(inv.grand_total)}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono text-emerald-700">
-                            {formatRupiah(inv.amount_paid)}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono font-semibold text-[#800020]">
-                            {formatRupiah(inv.balance)}
-                          </td>
-                          <td className="py-2.5 px-3 font-medium">
-                            {inv.status}
-                          </td>
-                          <td className="py-2.5 px-3 text-right">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setHistoryClient(null);
-                                onPreviewInvoice(inv);
-                              }}
-                              className="text-[#800020] hover:underline font-semibold cursor-pointer"
-                            >
-                              Lihat Invoice
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                      {clientInvoices.length === 0 && (
-                        <tr>
-                          <td
-                            colSpan={7}
-                            className="py-6 text-center text-slate-400"
-                          >
-                            Belum ada invoice untuk pelanggan ini.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Client Payments History */}
-              <div>
-                <h4 className="text-xs font-bold text-[#101B35] mb-2.5">
-                  Riwayat Pembayaran ({clientPayments.length})
-                </h4>
-                <div className="border border-slate-200 rounded-lg overflow-hidden">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr className="bg-slate-50 border-b border-slate-200 text-[11px] text-slate-500">
-                        <th className="py-2.5 px-3">No. Bukti</th>
-                        <th className="py-2.5 px-3">Tanggal</th>
-                        <th className="py-2.5 px-3">Metode</th>
-                        <th className="py-2.5 px-3">Catatan</th>
-                        <th className="py-2.5 px-3 text-right">Nominal</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-200">
-                      {clientPayments.map((pay) => (
-                        <tr key={pay.id}>
-                          <td className="py-2.5 px-3 font-mono font-semibold text-[#101B35]">
-                            {pay.receipt_number}
-                          </td>
-                          <td className="py-2.5 px-3 text-slate-600">
-                            {formatDateId(pay.payment_date)}
-                          </td>
-                          <td className="py-2.5 px-3">{pay.payment_method}</td>
-                          <td className="py-2.5 px-3 text-slate-600">
-                            {pay.notes || '-'}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono font-semibold text-emerald-700">
-                            {formatRupiah(pay.amount)}
-                          </td>
-                        </tr>
-                      ))}
-                      {clientPayments.length === 0 && (
-                        <tr>
-                          <td
-                            colSpan={5}
-                            className="py-6 text-center text-slate-400"
-                          >
-                            Belum ada pembayaran tercatat.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Delete Confirmation Dialog */}
-      {deleteTarget && (
-        <div
-          className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="bg-white rounded-xl border border-slate-200 w-full max-w-md p-6">
-            <h3 className="text-sm font-bold text-[#101B35]">
-              Konfirmasi Hapus Pelanggan
-            </h3>
-            <p className="text-xs text-slate-600 mt-2">
-              Apakah Anda yakin ingin menghapus data pelanggan{' '}
-              <span className="font-semibold text-[#101B35]">
-                {deleteTarget.client_name}
-              </span>
-              ?
-            </p>
-            {deleteError && (
-              <div className="mt-3 p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
-                {deleteError}
-              </div>
-            )}
-            <div className="mt-5 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setDeleteTarget(null)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
-              >
-                Batal
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmDelete}
-                className="px-4 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg cursor-pointer"
-              >
-                Hapus Pelanggan
-              </button>
-            </div>
           </div>
         </div>
       )}

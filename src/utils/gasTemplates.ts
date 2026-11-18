@@ -159,12 +159,20 @@ function setupAutosmartDatabase() {
       ['SET-01', 'company_name', 'Autosmart Digital Solutions', nowIso],
       ['SET-02', 'tagline', 'Skill Up For Digital Collaboration', nowIso],
       ['SET-03', 'business_field', 'Digital Learning & Business Solution', nowIso],
-      ['SET-04', 'invoice_prefix', 'INV/ASM', nowIso],
-      ['SET-05', 'receipt_prefix', 'KW/ASM', nowIso],
-      ['SET-06', 'document_year', '2026', nowIso],
-      ['SET-07', 'currency', 'IDR', nowIso],
-      ['SET-08', 'tax_enabled', 'false', nowIso],
-      ['SET-09', 'tax_rate', '11', nowIso]
+      ['SET-04', 'address', 'Jl. Brigjen Slamet Riadi VIII/56 Kec. Klojen Kel. Oro-Oro Dowo Kota Malang, Jawa Timur 65112, Indonesia.', nowIso],
+      ['SET-05', 'whatsapp', '085726686267', nowIso],
+      ['SET-06', 'email', 'autosmart2025@gmail.com', nowIso],
+      ['SET-07', 'website', 'https://autosmart-abuhafsh.github.io/Autosmart/', nowIso],
+      ['SET-08', 'logo_url', '/assets/autosmart-logo.png', nowIso],
+      ['SET-09', 'bank_name', 'BCA', nowIso],
+      ['SET-10', 'bank_account_name', 'Muhammad', nowIso],
+      ['SET-11', 'bank_account_number', '0113593935', nowIso],
+      ['SET-12', 'invoice_prefix', 'INV/ASM', nowIso],
+      ['SET-13', 'receipt_prefix', 'KW/ASM', nowIso],
+      ['SET-14', 'document_year', '2026', nowIso],
+      ['SET-15', 'currency', 'IDR', nowIso],
+      ['SET-16', 'tax_enabled', 'false', nowIso],
+      ['SET-17', 'tax_rate', '11', nowIso]
     ];
     settingsSheet.getRange(2, 1, defaultSettings.length, 4).setValues(defaultSettings);
   }
@@ -376,11 +384,14 @@ function handleRequest_(e, method) {
 }
 
 /**
- * Mencegah Formula Injection pada sel Google Sheets
+ * Mencegah Formula Injection & menjaga batas karakter sel Google Sheets (maks 50.000)
  */
 function sanitizeCell_(val) {
   if (typeof val !== 'string') return val;
   var trimmed = val.trim();
+  if (trimmed.length > 49000) {
+    trimmed = trimmed.slice(0, 49000);
+  }
   if (/^[=+\\-@]/.test(trimmed)) {
     return "'" + trimmed;
   }
@@ -436,7 +447,6 @@ function readSheetRows_(ss, sheetName) {
  */
 function writeSheetRows_(ss, sheetName, headers, records) {
   var sheet = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
-  sheet.clearContents();
   var matrix = [headers];
 
   for (var i = 0; i < records.length; i++) {
@@ -449,6 +459,7 @@ function writeSheetRows_(ss, sheetName, headers, records) {
     matrix.push(row);
   }
 
+  sheet.clearContents();
   sheet.getRange(1, 1, matrix.length, headers.length).setValues(matrix);
   var headerRange = sheet.getRange(1, 1, 1, headers.length);
   headerRange.setBackground('#101B35');
