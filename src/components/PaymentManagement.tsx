@@ -60,9 +60,9 @@ const PAYMENT_METHODS: PaymentMethod[] = [
 ];
 
 export const PaymentManagement: React.FC<PaymentManagementProps> = ({
-  payments,
-  invoices,
-  settings,
+  payments = [],
+  invoices = [],
+  settings = {} as CompanySettingsMap,
   preselectedInvoice,
   onClearPreselectedInvoice,
   onRecordPayment,
@@ -118,10 +118,10 @@ export const PaymentManagement: React.FC<PaymentManagementProps> = ({
   const nextReceiptNumberPreview = useMemo(() => {
     return generateNextDocumentNumber(
       payments.map((p) => p.receipt_number),
-      settings.receipt_prefix || 'KW/ASM',
-      settings.document_year || '2026'
+      settings?.receipt_prefix || 'KW/ASM',
+      settings?.document_year || '2026'
     );
-  }, [payments, settings.receipt_prefix, settings.document_year]);
+  }, [payments, settings?.receipt_prefix, settings?.document_year]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -325,13 +325,13 @@ export const PaymentManagement: React.FC<PaymentManagementProps> = ({
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                    <th className="py-3 px-5">No. Bukti Pembayaran</th>
-                    <th className="py-3 px-4">Tanggal Bayar</th>
-                    <th className="py-3 px-4">Invoice & Pelanggan</th>
-                    <th className="py-3 px-4">Metode & Referensi</th>
-                    <th className="py-3 px-4 text-right">Nominal Dibayar</th>
-                    <th className="py-3 px-4">Catatan</th>
-                    <th className="py-3 px-5 text-right">Tindakan</th>
+                    <th className="py-3 px-4">No. Bukti</th>
+                    <th className="py-3 px-3">Tanggal Bayar</th>
+                    <th className="py-3 px-3">Invoice & Pelanggan</th>
+                    <th className="py-3 px-3">Metode & Referensi</th>
+                    <th className="py-3 px-3 text-right">Nominal Dibayar</th>
+                    <th className="py-3 px-3">Catatan</th>
+                    <th className="py-3 px-4 text-right">Tindakan</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 text-xs">
@@ -342,21 +342,21 @@ export const PaymentManagement: React.FC<PaymentManagementProps> = ({
                         key={pay.id}
                         className="hover:bg-slate-50/80 transition-colors"
                       >
-                        <td className="py-3.5 px-5 font-mono font-bold text-[#101B35] whitespace-nowrap">
+                        <td className="py-3.5 px-4 font-mono font-bold text-[#101B35] whitespace-nowrap">
                           {pay.receipt_number}
                         </td>
-                        <td className="py-3.5 px-4 text-slate-600 whitespace-nowrap">
+                        <td className="py-3.5 px-3 text-slate-600 whitespace-nowrap">
                           {formatDateId(pay.payment_date)}
                         </td>
-                        <td className="py-3.5 px-4">
-                          <div className="font-mono font-semibold text-[#800020]">
+                        <td className="py-3.5 px-3">
+                          <div className="font-mono font-semibold text-[#800020] whitespace-nowrap">
                             {inv?.invoice_number || pay.invoice_id}
                           </div>
-                          <div className="text-[11px] text-slate-600 font-medium">
+                          <div className="text-[11px] text-slate-600 font-medium truncate max-w-[170px] xl:max-w-[220px]">
                             {inv?.client?.client_name || '-'}
                           </div>
                         </td>
-                        <td className="py-3.5 px-4">
+                        <td className="py-3.5 px-3 whitespace-nowrap">
                           <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-[#101B35]">
                             {pay.payment_method}
                           </span>
@@ -366,13 +366,16 @@ export const PaymentManagement: React.FC<PaymentManagementProps> = ({
                             </div>
                           )}
                         </td>
-                        <td className="py-3.5 px-4 text-right font-mono font-bold text-emerald-700 tabular-nums whitespace-nowrap">
+                        <td className="py-3.5 px-3 text-right font-mono font-bold text-emerald-700 tabular-nums whitespace-nowrap">
                           {formatRupiah(pay.amount)}
                         </td>
-                        <td className="py-3.5 px-4 text-slate-600 max-w-xs truncate">
+                        <td
+                          className="py-3.5 px-3 text-slate-600 max-w-[140px] xl:max-w-[200px] truncate"
+                          title={pay.notes || ''}
+                        >
                           {pay.notes || '-'}
                         </td>
-                        <td className="py-3.5 px-5 text-right whitespace-nowrap">
+                        <td className="py-3.5 px-4 text-right whitespace-nowrap">
                           {confirmDeleteId === pay.id ? (
                             <div className="inline-flex items-center gap-1.5">
                               <button

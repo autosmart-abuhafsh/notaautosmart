@@ -136,10 +136,18 @@ function compressImageFile(
 
 export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
   mode,
-  settings,
-  users,
-  activityLogs,
-  databaseStatus,
+  settings = {} as CompanySettingsMap,
+  users = [],
+  activityLogs = [],
+  databaseStatus = {
+    connected: false,
+    mode: 'LOCAL_STORAGE',
+    spreadsheet_name: 'AUTOSMART_INVOICE_DATABASE',
+    gas_url_configured: false,
+    gas_url_masked: '',
+    last_sync: null,
+    message: 'Data disimpan secara persisten di penyimpanan lokal.',
+  },
   onSaveSettings,
   onCreateUser,
   onUpdateUser,
@@ -363,8 +371,17 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
                     disabled={syncingGas}
                     onClick={async () => {
                       setSyncingGas(true);
+                      setTestResult(null);
                       try {
                         await onTriggerDatabaseSync();
+                      } catch (err) {
+                        setTestResult({
+                          ok: false,
+                          message:
+                            err instanceof Error
+                              ? err.message
+                              : 'Gagal menyimpan (Push) data ke Google Sheets.',
+                        });
                       } finally {
                         setSyncingGas(false);
                       }
@@ -387,8 +404,17 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
                       disabled={pullingGas}
                       onClick={async () => {
                         setPullingGas(true);
+                        setTestResult(null);
                         try {
                           await onPullDatabaseFromGas();
+                        } catch (err) {
+                          setTestResult({
+                            ok: false,
+                            message:
+                              err instanceof Error
+                                ? err.message
+                                : 'Gagal menarik (Pull) data dari Google Sheets.',
+                          });
                         } finally {
                           setPullingGas(false);
                         }
@@ -447,9 +473,23 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
                     setSavingGas(true);
                     setTestResult(null);
                     try {
-                      await onSaveDatabaseConfig(gasUrl, gasSecret);
+                      await onSaveDatabaseConfig(gasUrl.trim(), gasSecret.trim());
+                      setTestResult({
+                        ok: true,
+                        message: gasUrl.trim()
+                          ? 'Konfigurasi Google Apps Script berhasil disimpan & disinkronkan!'
+                          : 'Koneksi Google Apps Script dinonaktifkan (kembali ke penyimpanan lokal/server).',
+                      });
                       setGasUrl('');
                       setGasSecret('');
+                    } catch (err) {
+                      setTestResult({
+                        ok: false,
+                        message:
+                          err instanceof Error
+                            ? err.message
+                            : 'Gagal menyimpan konfigurasi Google Apps Script.',
+                      });
                     } finally {
                       setSavingGas(false);
                     }
@@ -817,24 +857,30 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
             </p>
           </div>
           <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto">
-            {activityLogs.map((log) => (
-              <div
-                key={log.id}
-                className="px-4 sm:px-6 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs"
-              >
-                <div className="flex flex-wrap items-center gap-2 min-w-0">
-                  <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-[#101B35] shrink-0">
-                    {log.activity}
-                  </span>
-                  <span className="text-slate-700 font-medium break-words">
-                    {log.description}
-                  </span>
-                </div>
-                <div className="text-[11px] text-slate-400 font-mono shrink-0">
-                  {log.user_name || log.user_id} · {formatDateId(log.timestamp)}
-                </div>
+            {activityLogs.length === 0 ? (
+              <div className="px-4 sm:px-6 py-8 text-center text-xs text-slate-500">
+                Belum ada log aktivitas sistem yang tercatat.
               </div>
-            ))}
+            ) : (
+              activityLogs.map((log) => (
+                <div
+                  key={log.id}
+                  className="px-4 sm:px-6 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs"
+                >
+                  <div className="flex flex-wrap items-center gap-2 min-w-0">
+                    <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-[#101B35] shrink-0">
+                      {log.activity}
+                    </span>
+                    <span className="text-slate-700 font-medium break-words">
+                      {log.description}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 font-mono shrink-0">
+                    {log.user_name || log.user_id} · {formatDateId(log.timestamp)}
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>

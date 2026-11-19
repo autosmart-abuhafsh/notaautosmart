@@ -63,13 +63,13 @@ const DEFAULT_SETTINGS: CompanySettingsMap = {
 };
 
 const DEFAULT_DB_STATUS: DatabaseStatus = {
-  mode: 'DEMO_LOCAL',
+  mode: 'LOCAL_STORAGE',
   connected: false,
   spreadsheet_name: 'AUTOSMART_INVOICE_DATABASE',
   gas_url_configured: false,
   gas_url_masked: '',
   last_sync: null,
-  message: 'Mode DEMO / Database Persisten Lokal Aktif',
+  message: 'Database Persisten Aktif (Siap disinkronkan ke Google Sheets)',
 };
 
 export default function App() {
@@ -191,16 +191,34 @@ export default function App() {
         activityLogs?: ActivityLog[];
         databaseStatus?: DatabaseStatus;
       };
-      mirrorBootstrapToLocalDb(boot);
+      const mirrored = mirrorBootstrapToLocalDb(boot);
       setClients(boot.clients || []);
       setServices(boot.services || []);
       setInvoices(boot.invoices || []);
       setPayments(boot.payments || []);
-      setSettings({ ...DEFAULT_SETTINGS, ...(boot.settings || {}) });
+      setSettings({ ...DEFAULT_SETTINGS, ...mirrored.mergedSettings });
       setUsers(boot.users || []);
       setActivityLogs(boot.activityLogs || []);
+
+      const localGasCfg = loadLocalGasConfig();
       if (boot.databaseStatus) {
-        setDatabaseStatus(boot.databaseStatus);
+        if (
+          !boot.databaseStatus.gas_url_configured &&
+          localGasCfg.webAppUrl
+        ) {
+          setDatabaseStatus({
+            mode: 'GOOGLE_SHEETS',
+            connected: true,
+            spreadsheet_name: 'AUTOSMART_INVOICE_DATABASE',
+            gas_url_configured: true,
+            gas_url_masked: `${localGasCfg.webAppUrl.slice(0, 42)}...`,
+            last_sync: localGasCfg.lastSync || boot.databaseStatus.last_sync,
+            message:
+              'Terhubung ke Google Sheets melalui Google Apps Script Proxy',
+          });
+        } else {
+          setDatabaseStatus(boot.databaseStatus);
+        }
       }
     } catch {
       localStorage.removeItem('autosmart_token');
@@ -237,20 +255,25 @@ export default function App() {
   };
 
   // --- CRUD Handlers ---
-  const handleCreateClient = async (payload: Partial<Client>) => {
-    const res = await apiRequest('/api/clients', {
+  const handleCreateClient = async (
+    payload: Omit<Client, 'id' | 'created_at'>
+  ) => {
+    const res = (await apiRequest('/api/clients', {
       method: 'POST',
       body: JSON.stringify(payload),
-    });
+    })) as { client: Client };
     await loadBootstrapData();
     showToast(`Pelanggan ${res.client.client_name} berhasil ditambahkan.`);
   };
 
-  const handleUpdateClient = async (id: string, payload: Partial<Client>) => {
-    const res = await apiRequest(`/api/clients/${id}`, {
+  const handleUpdateClient = async (
+    id: string,
+    payload: Omit<Client, 'id' | 'created_at'>
+  ) => {
+    const res = (await apiRequest(`/api/clients/${id}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
-    });
+    })) as { client: Client };
     await loadBootstrapData();
     showToast(`Data pelanggan ${res.client.client_name} berhasil diperbarui.`);
   };
@@ -261,23 +284,25 @@ export default function App() {
     showToast('Data pelanggan berhasil dihapus.');
   };
 
-  const handleCreateService = async (payload: Partial<ServiceItem>) => {
-    const res = await apiRequest('/api/services', {
+  const handleCreateService = async (
+    payload: Omit<ServiceItem, 'id' | 'created_at'>
+  ) => {
+    const res = (await apiRequest('/api/services', {
       method: 'POST',
       body: JSON.stringify(payload),
-    });
+    })) as { service: ServiceItem };
     await loadBootstrapData();
     showToast(`Layanan ${res.service.service_name} berhasil ditambahkan.`);
   };
 
   const handleUpdateService = async (
     id: string,
-    payload: Partial<ServiceItem>
+    payload: Omit<ServiceItem, 'id' | 'created_at'>
   ) => {
-    const res = await apiRequest(`/api/services/${id}`, {
+    const res = (await apiRequest(`/api/services/${id}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
-    });
+    })) as { service: ServiceItem };
     await loadBootstrapData();
     showToast(`Layanan ${res.service.service_name} berhasil diperbarui.`);
   };
@@ -289,10 +314,10 @@ export default function App() {
   };
 
   const handleAddCategory = async (categoryName: string) => {
-    const res = await apiRequest('/api/services/categories', {
+    const res = (await apiRequest('/api/services/categories', {
       method: 'POST',
       body: JSON.stringify({ category: categoryName }),
-    });
+    })) as { settings?: CompanySettingsMap; added?: string };
     if (res.settings) {
       setSettings((prev) => ({ ...prev, ...res.settings }));
     }
@@ -301,10 +326,10 @@ export default function App() {
   };
 
   const handleRenameCategory = async (oldName: string, newName: string) => {
-    const res = await apiRequest('/api/services/categories', {
+    const res = (await apiRequest('/api/services/categories', {
       method: 'PUT',
       body: JSON.stringify({ oldCategory: oldName, newCategory: newName }),
-    });
+    })) as { settings?: CompanySettingsMap };
     if (res.settings) {
       setSettings((prev) => ({ ...prev, ...res.settings }));
     }
@@ -318,25 +343,29 @@ export default function App() {
     categoryName: string,
     fallbackCategory?: string
   ) => {
-    const res = await apiRequest('/api/services/categories', {
+    const res = (await apiRequest('/api/services/categories', {
       method: 'DELETE',
       body: JSON.stringify({ category: categoryName, fallbackCategory }),
-    });
+    })) as {
+      settings?: CompanySettingsMap;
+      reassignedCount?: number;
+      fallbackUsed?: string;
+    };
     if (res.settings) {
       setSettings((prev) => ({ ...prev, ...res.settings }));
     }
     await loadBootstrapData();
     showToast(
-      res.reassignedCount > 0
+      (res.reassignedCount || 0) > 0
         ? `Kategori "${categoryName}" dihapus (${res.reassignedCount} layanan dipindahkan ke "${res.fallbackUsed}").`
         : `Kategori "${categoryName}" berhasil dihapus.`
     );
   };
 
   const handleResetCategories = async () => {
-    const res = await apiRequest('/api/services/categories/reset', {
+    const res = (await apiRequest('/api/services/categories/reset', {
       method: 'POST',
-    });
+    })) as { settings?: CompanySettingsMap };
     if (res.settings) {
       setSettings((prev) => ({ ...prev, ...res.settings }));
     }
@@ -352,10 +381,10 @@ export default function App() {
   const handleCreateInvoice = async (
     payload: Record<string, unknown>
   ): Promise<Invoice> => {
-    const res = await apiRequest('/api/invoices', {
+    const res = (await apiRequest('/api/invoices', {
       method: 'POST',
       body: JSON.stringify(payload),
-    });
+    })) as { invoice: Invoice };
     await loadBootstrapData();
     showToast(`Invoice ${res.invoice.invoice_number} berhasil diterbitkan.`);
     return res.invoice;
@@ -365,10 +394,10 @@ export default function App() {
     id: string,
     payload: Record<string, unknown>
   ): Promise<Invoice> => {
-    const res = await apiRequest(`/api/invoices/${id}`, {
+    const res = (await apiRequest(`/api/invoices/${id}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
-    });
+    })) as { invoice: Invoice };
     await loadBootstrapData();
     showToast(`Invoice ${res.invoice.invoice_number} berhasil diperbarui.`);
     return res.invoice;
@@ -383,10 +412,10 @@ export default function App() {
   const handleRecordPayment = async (
     payload: Record<string, unknown>
   ): Promise<Payment> => {
-    const res = await apiRequest('/api/payments', {
+    const res = (await apiRequest('/api/payments', {
       method: 'POST',
       body: JSON.stringify(payload),
-    });
+    })) as { payment: Payment };
     await loadBootstrapData();
     showToast(
       `Pembayaran ${res.payment.receipt_number} berhasil dicatat dan status invoice diperbarui.`
@@ -398,10 +427,10 @@ export default function App() {
     id: string,
     payload: Record<string, unknown>
   ): Promise<Payment> => {
-    const res = await apiRequest(`/api/payments/${id}`, {
+    const res = (await apiRequest(`/api/payments/${id}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
-    });
+    })) as { payment: Payment };
     await loadBootstrapData();
     showToast(
       `Catatan pembayaran ${res.payment.receipt_number} berhasil diperbarui.`
@@ -416,10 +445,10 @@ export default function App() {
   };
 
   const handleSaveSettings = async (updates: Partial<CompanySettingsMap>) => {
-    const res = await apiRequest('/api/settings', {
+    const res = (await apiRequest('/api/settings', {
       method: 'PUT',
       body: JSON.stringify(updates),
-    });
+    })) as { settings?: CompanySettingsMap };
     setSettings((prev) => ({ ...prev, ...(res.settings || {}) }));
     await loadBootstrapData();
     showToast('Pengaturan identitas perusahaan berhasil disimpan.');
@@ -456,10 +485,10 @@ export default function App() {
       apiSecret: apiSecret.trim(),
       lastSync: existingCfg.lastSync,
     });
-    const res = await apiRequest('/api/database/config', {
+    const res = (await apiRequest('/api/database/config', {
       method: 'POST',
       body: JSON.stringify({ webAppUrl, apiSecret }),
-    });
+    })) as { databaseStatus?: DatabaseStatus; autoSynced?: boolean };
     if (res.databaseStatus) {
       setDatabaseStatus(res.databaseStatus);
     }
@@ -489,34 +518,16 @@ export default function App() {
     webAppUrl: string,
     apiSecret: string
   ) => {
-    return apiRequest('/api/database/test', {
+    return (await apiRequest('/api/database/test', {
       method: 'POST',
       body: JSON.stringify({ webAppUrl, apiSecret }),
-    });
-  };
-
-  const handleToggleDemoMode = async (
-    enabled: boolean,
-    resetAll: boolean = false
-  ) => {
-    const existingCfg = loadLocalGasConfig();
-    saveLocalGasConfig({
-      ...existingCfg,
-      demoMode: enabled,
-    });
-    const res = await apiRequest('/api/database/demo-mode', {
-      method: 'POST',
-      body: JSON.stringify({ enabled, resetAll }),
-    });
-    if (res.databaseStatus) {
-      setDatabaseStatus(res.databaseStatus);
-    }
-    await loadBootstrapData();
-    showToast(
-      enabled
-        ? 'Mode Demo dihidupkan kembali — Menampilkan data contoh simulasi.'
-        : 'Mode Demo dimatikan — Database kini bersih (Fresh / Rp 0).'
-    );
+    })) as {
+      ok: boolean;
+      spreadsheetName?: string;
+      spreadsheetUrl?: string;
+      counts?: Record<string, number>;
+      serverTime?: string;
+    };
   };
 
   // Unauthenticated View
@@ -543,7 +554,6 @@ export default function App() {
         onLogout={handleLogout}
         mobileOpen={mobileMenuOpen}
         onCloseMobile={() => setMobileMenuOpen(false)}
-        onToggleDemoMode={handleToggleDemoMode}
       />
 
       {/* Main Content Area */}
@@ -551,7 +561,6 @@ export default function App() {
         <Header
           activeTab={activeTab}
           currentUser={currentUser}
-          databaseStatus={databaseStatus}
           onOpenMobileMenu={() => setMobileMenuOpen(true)}
           onQuickCreateInvoice={() => {
             setTriggerCreateInvoice(true);
@@ -564,8 +573,6 @@ export default function App() {
             setPreselectedPaymentInvoice(firstUnpaid || invoices[0] || null);
             setActiveTab('payments');
           }}
-          onNavigateTab={setActiveTab}
-          onToggleDemoMode={handleToggleDemoMode}
         />
 
         {/* Toast Notification */}
@@ -587,13 +594,19 @@ export default function App() {
             <DashboardView
               invoices={invoices}
               payments={payments}
-              activityLogs={activityLogs}
-              onPreviewInvoice={(inv) => setPreviewInvoice(inv)}
+              onViewInvoice={(inv) => setPreviewInvoice(inv)}
               onRecordPaymentForInvoice={(inv) => {
                 setPreselectedPaymentInvoice(inv);
                 setActiveTab('payments');
               }}
-              onNavigateInvoices={() => setActiveTab('invoices')}
+              onOpenWhatsAppForInvoice={(inv) =>
+                setWhatsAppContext({ invoice: inv, payment: null })
+              }
+              onNavigateToInvoices={() => setActiveTab('invoices')}
+              onCreateNewInvoice={() => {
+                setTriggerCreateInvoice(true);
+                setActiveTab('invoices');
+              }}
             />
           )}
 
@@ -601,11 +614,9 @@ export default function App() {
             <ClientManagement
               clients={clients}
               invoices={invoices}
-              payments={payments}
               onCreateClient={handleCreateClient}
               onUpdateClient={handleUpdateClient}
               onDeleteClient={handleDeleteClient}
-              onPreviewInvoice={(inv) => setPreviewInvoice(inv)}
             />
           )}
 
@@ -650,7 +661,7 @@ export default function App() {
             <PaymentManagement
               payments={payments}
               invoices={invoices}
-              currentUser={currentUser}
+              settings={settings}
               preselectedInvoice={preselectedPaymentInvoice}
               onClearPreselectedInvoice={() =>
                 setPreselectedPaymentInvoice(null)
@@ -663,7 +674,7 @@ export default function App() {
                   inv || invoices.find((i) => i.id === pay.invoice_id);
                 setPreviewReceipt({ payment: pay, invoice: matchedInv });
               }}
-              onSendReceiptWhatsApp={(pay, inv) => {
+              onOpenWhatsAppReceipt={(pay, inv) => {
                 const matchedInv =
                   inv || invoices.find((i) => i.id === pay.invoice_id);
                 if (matchedInv) {
@@ -688,7 +699,7 @@ export default function App() {
               mode={activeTab}
               settings={settings}
               users={users}
-              currentUser={currentUser}
+              activityLogs={activityLogs}
               databaseStatus={databaseStatus}
               onSaveSettings={handleSaveSettings}
               onCreateUser={handleCreateUser}
@@ -697,7 +708,6 @@ export default function App() {
               onTriggerDatabaseSync={handleTriggerDatabaseSync}
               onPullDatabaseFromGas={handlePullDatabaseFromGas}
               onTestDatabaseConnection={handleTestDatabaseConnection}
-              onToggleDemoMode={handleToggleDemoMode}
             />
           )}
         </main>

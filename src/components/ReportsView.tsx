@@ -149,14 +149,20 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               p.payment_date >= startDate &&
               p.payment_date <= endDate
           )
-          .reduce((s, p) => s + p.amount, 0);
+          .reduce((s, p) => s + (Number(p.amount) || 0), 0);
 
         return {
           client,
           invoiceCount: clientInvs.length,
-          totalBilled: clientInvs.reduce((s, i) => s + i.grand_total, 0),
+          totalBilled: clientInvs.reduce(
+            (s, i) => s + (Number(i.grand_total) || 0),
+            0
+          ),
           totalPaid: received,
-          totalBalance: clientInvs.reduce((s, i) => s + i.balance, 0),
+          totalBalance: clientInvs.reduce(
+            (s, i) => s + (Number(i.balance) || 0),
+            0
+          ),
         };
       });
   }, [clients, clientFilter, invoices, payments, startDate, endDate]);
@@ -206,14 +212,14 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const summaryTotals = useMemo(() => {
     const totalBilled = filteredInvoices
       .filter((i) => i.status !== 'Cancelled')
-      .reduce((s, i) => s + i.grand_total, 0);
+      .reduce((s, i) => s + (Number(i.grand_total) || 0), 0);
     const totalActualRevenue = filteredPayments.reduce(
-      (s, p) => s + p.amount,
+      (s, p) => s + (Number(p.amount) || 0),
       0
     );
     const totalReceivables = filteredInvoices
       .filter((i) => i.status !== 'Cancelled')
-      .reduce((s, i) => s + i.balance, 0);
+      .reduce((s, i) => s + (Number(i.balance) || 0), 0);
 
     return { totalBilled, totalActualRevenue, totalReceivables };
   }, [filteredInvoices, filteredPayments]);

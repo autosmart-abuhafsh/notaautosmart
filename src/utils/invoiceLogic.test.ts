@@ -196,12 +196,31 @@ test('computeDashboardMetrics aggregates real invoice and payment metrics', () =
     '2026-11-08'
   );
   assert.equal(metrics.totalInvoices, 2);
+  assert.equal(metrics.totalInvoicesCount, 2);
   assert.equal(metrics.totalInvoiceValue, 13000000);
+  assert.equal(metrics.totalInvoicedAmount, 13000000);
   assert.equal(metrics.totalPaidReceived, 5000000);
+  assert.equal(metrics.totalPaidAmount, 5000000);
   assert.equal(metrics.totalReceivables, 8000000);
   assert.equal(metrics.paidInvoicesCount, 1);
+  assert.equal(metrics.paidCount, 1);
   assert.equal(metrics.unpaidInvoicesCount, 1);
+  assert.equal(metrics.unpaidCount, 0);
   assert.equal(metrics.overdueInvoicesCount, 1);
+  assert.equal(metrics.overdueCount, 1);
+  assert.equal(Number.isNaN(metrics.unpaidCount + metrics.overdueCount), false);
+  assert.equal(metrics.unpaidCount + metrics.overdueCount, 1);
+
+  const rangeMetrics = computeDashboardMetrics(sampleInvoices, samplePayments, {
+    startDate: '2026-11-01',
+    endDate: '2026-11-30',
+    todayDate: '2026-11-08',
+  });
+  assert.equal(rangeMetrics.totalInvoicesCount, 1);
+  assert.equal(rangeMetrics.totalInvoicedAmount, 5000000);
+  assert.equal(rangeMetrics.totalPaidAmount, 5000000);
+  assert.equal(rangeMetrics.paidCount, 1);
+  assert.equal(rangeMetrics.unpaidCount + rangeMetrics.overdueCount, 0);
 });
 
 test('service categories can be parsed, added, renamed, and deleted with service reassignment', () => {

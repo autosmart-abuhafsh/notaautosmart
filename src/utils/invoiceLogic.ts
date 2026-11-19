@@ -376,12 +376,18 @@ export function buildWhatsAppMessage(params: {
 
 export interface DashboardMetrics {
   totalInvoices: number;
+  totalInvoicesCount: number;
   totalInvoiceValue: number;
+  totalInvoicedAmount: number;
   totalPaidReceived: number;
+  totalPaidAmount: number;
   totalReceivables: number;
   paidInvoicesCount: number;
+  paidCount: number;
   unpaidInvoicesCount: number;
+  unpaidCount: number;
   overdueInvoicesCount: number;
+  overdueCount: number;
 }
 
 /**
@@ -390,10 +396,51 @@ export interface DashboardMetrics {
 export function computeDashboardMetrics(
   invoices: Invoice[],
   payments: Payment[],
-  todayDate?: string
+  todayDateOrRange?: string | { startDate: string; endDate: string }
 ): DashboardMetrics {
-  const today = todayDate || getJakartaDateString();
-  const activeInvoices = invoices.filter((inv) => inv.status !== 'Cancelled');
+  const isRange =
+    typeof todayDateOrRange === 'object' && todayDateOrRange !== null;
+  const today =
+    typeof todayDateOrRange === 'string' && todayDateOrRange
+      ? todayDateOrRange
+      : getJakartaDateString();
+
+  const activeInvoices = invoices.filter((inv) => {
+    if (inv.status === 'Cancelled') return false;
+    if (isRange) {
+      if (
+        todayDateOrRange.startDate &&
+        inv.issue_date < todayDateOrRange.startDate
+      ) {
+        return false;
+      }
+      if (
+        todayDateOrRange.endDate &&
+        inv.issue_date > todayDateOrRange.endDate
+      ) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  const filteredPayments = isRange
+    ? payments.filter((p) => {
+        if (
+          todayDateOrRange.startDate &&
+          p.payment_date < todayDateOrRange.startDate
+        ) {
+          return false;
+        }
+        if (
+          todayDateOrRange.endDate &&
+          p.payment_date > todayDateOrRange.endDate
+        ) {
+          return false;
+        }
+        return true;
+      })
+    : payments;
 
   let totalInvoiceValue = 0;
   let totalReceivables = 0;
@@ -423,19 +470,25 @@ export function computeDashboardMetrics(
     }
   }
 
-  const totalPaidReceived = payments.reduce(
+  const totalPaidReceived = filteredPayments.reduce(
     (sum, p) => sum + (Number(p.amount) || 0),
     0
   );
 
   return {
     totalInvoices: activeInvoices.length,
+    totalInvoicesCount: activeInvoices.length,
     totalInvoiceValue,
+    totalInvoicedAmount: totalInvoiceValue,
     totalPaidReceived,
+    totalPaidAmount: totalPaidReceived,
     totalReceivables,
     paidInvoicesCount,
+    paidCount: paidInvoicesCount,
     unpaidInvoicesCount,
+    unpaidCount: unpaidInvoicesCount,
     overdueInvoicesCount,
+    overdueCount: overdueInvoicesCount,
   };
 }
 

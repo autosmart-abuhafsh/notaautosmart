@@ -731,7 +731,7 @@ export const ServiceManagement: React.FC<ServiceManagementProps> = ({
                     onChange={(e) =>
                       setFormData({
                         ...formData,
-                        price: Math.max(0, Number(e.target.value)),
+                        price: Math.max(0, Number(e.target.value) || 0),
                       })
                     }
                     className="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
