@@ -684,15 +684,23 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                         <input
                           type="number"
                           min={1}
+                          step="any"
+                          placeholder="1"
                           aria-label={`Quantity baris ${idx + 1}`}
-                          value={item.quantity}
-                          onChange={(e) =>
+                          value={item.quantity === 0 ? '' : item.quantity}
+                          onChange={(e) => {
+                            const raw = e.target.value;
                             handleUpdateRowField(
                               item.id,
                               'quantity',
-                              Math.max(1, Number(e.target.value) || 1)
-                            )
-                          }
+                              raw === '' ? 0 : Math.max(0, Number(raw))
+                            );
+                          }}
+                          onBlur={() => {
+                            if (!item.quantity || item.quantity <= 0) {
+                              handleUpdateRowField(item.id, 'quantity', 1);
+                            }
+                          }}
                           className="w-full px-2 py-2 text-xs font-mono text-center border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
                         />
                       </td>
@@ -716,15 +724,17 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                           type="number"
                           min={0}
                           step="any"
+                          placeholder="0"
                           aria-label={`Harga satuan baris ${idx + 1}`}
-                          value={item.unit_price}
-                          onChange={(e) =>
+                          value={item.unit_price === 0 ? '' : item.unit_price}
+                          onChange={(e) => {
+                            const raw = e.target.value;
                             handleUpdateRowField(
                               item.id,
                               'unit_price',
-                              Math.max(0, Number(e.target.value) || 0)
-                            )
-                          }
+                              raw === '' ? 0 : Math.max(0, Number(raw))
+                            );
+                          }}
                           className="w-full px-2.5 py-2 text-xs font-mono text-right border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
                         />
                       </td>
@@ -733,15 +743,17 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                           type="number"
                           min={0}
                           step="any"
+                          placeholder="0"
                           aria-label={`Diskon item baris ${idx + 1}`}
-                          value={item.discount}
-                          onChange={(e) =>
+                          value={item.discount === 0 ? '' : item.discount}
+                          onChange={(e) => {
+                            const raw = e.target.value;
                             handleUpdateRowField(
                               item.id,
                               'discount',
-                              Math.max(0, Number(e.target.value) || 0)
-                            )
-                          }
+                              raw === '' ? 0 : Math.max(0, Number(raw))
+                            );
+                          }}
                           className="w-full px-2.5 py-2 text-xs font-mono text-right border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
                         />
                       </td>
@@ -841,14 +853,22 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                       <input
                         type="number"
                         min={1}
-                        value={item.quantity}
-                        onChange={(e) =>
+                        step="any"
+                        placeholder="1"
+                        value={item.quantity === 0 ? '' : item.quantity}
+                        onChange={(e) => {
+                          const raw = e.target.value;
                           handleUpdateRowField(
                             item.id,
                             'quantity',
-                            Math.max(1, Number(e.target.value) || 1)
-                          )
-                        }
+                            raw === '' ? 0 : Math.max(0, Number(raw))
+                          );
+                        }}
+                        onBlur={() => {
+                          if (!item.quantity || item.quantity <= 0) {
+                            handleUpdateRowField(item.id, 'quantity', 1);
+                          }
+                        }}
                         className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
                       />
                     </div>
@@ -876,14 +896,16 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                         type="number"
                         min={0}
                         step="any"
-                        value={item.unit_price}
-                        onChange={(e) =>
+                        placeholder="0"
+                        value={item.unit_price === 0 ? '' : item.unit_price}
+                        onChange={(e) => {
+                          const raw = e.target.value;
                           handleUpdateRowField(
                             item.id,
                             'unit_price',
-                            Math.max(0, Number(e.target.value) || 0)
-                          )
-                        }
+                            raw === '' ? 0 : Math.max(0, Number(raw))
+                          );
+                        }}
                         className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
                       />
                     </div>
@@ -895,14 +917,16 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                         type="number"
                         min={0}
                         step="any"
-                        value={item.discount}
-                        onChange={(e) =>
+                        placeholder="0"
+                        value={item.discount === 0 ? '' : item.discount}
+                        onChange={(e) => {
+                          const raw = e.target.value;
                           handleUpdateRowField(
                             item.id,
                             'discount',
-                            Math.max(0, Number(e.target.value) || 0)
-                          )
-                        }
+                            raw === '' ? 0 : Math.max(0, Number(raw))
+                          );
+                        }}
                         className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
                       />
                     </div>
@@ -978,10 +1002,12 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                 type="number"
                 min={0}
                 step="any"
-                value={overallDiscount}
-                onChange={(e) =>
-                  setOverallDiscount(Math.max(0, Number(e.target.value) || 0))
-                }
+                placeholder="0"
+                value={overallDiscount === 0 ? '' : overallDiscount}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  setOverallDiscount(raw === '' ? 0 : Math.max(0, Number(raw)));
+                }}
                 className="w-36 px-2.5 py-1.5 text-right font-mono border border-slate-300 rounded-lg"
               />
             </div>
@@ -995,10 +1021,12 @@ export const InvoiceManagement: React.FC<InvoiceManagementProps> = ({
                 type="number"
                 min={0}
                 step="any"
-                value={additionalCost}
-                onChange={(e) =>
-                  setAdditionalCost(Math.max(0, Number(e.target.value) || 0))
-                }
+                placeholder="0"
+                value={additionalCost === 0 ? '' : additionalCost}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  setAdditionalCost(raw === '' ? 0 : Math.max(0, Number(raw)));
+                }}
                 className="w-36 px-2.5 py-1.5 text-right font-mono border border-slate-300 rounded-lg"
               />
             </div>

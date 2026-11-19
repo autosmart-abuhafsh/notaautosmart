@@ -396,14 +396,18 @@ export interface DashboardMetrics {
 export function computeDashboardMetrics(
   invoices: Invoice[],
   payments: Payment[],
-  todayDateOrRange?: string | { startDate: string; endDate: string }
+  todayDateOrRange?:
+    | string
+    | { startDate?: string; endDate?: string; todayDate?: string }
 ): DashboardMetrics {
   const isRange =
     typeof todayDateOrRange === 'object' && todayDateOrRange !== null;
   const today =
     typeof todayDateOrRange === 'string' && todayDateOrRange
       ? todayDateOrRange
-      : getJakartaDateString();
+      : isRange && todayDateOrRange.todayDate
+        ? todayDateOrRange.todayDate
+        : getJakartaDateString();
 
   const activeInvoices = invoices.filter((inv) => {
     if (inv.status === 'Cancelled') return false;
@@ -486,7 +490,7 @@ export function computeDashboardMetrics(
     paidInvoicesCount,
     paidCount: paidInvoicesCount,
     unpaidInvoicesCount,
-    unpaidCount: unpaidInvoicesCount,
+    unpaidCount: Math.max(0, unpaidInvoicesCount - overdueInvoicesCount),
     overdueInvoicesCount,
     overdueCount: overdueInvoicesCount,
   };

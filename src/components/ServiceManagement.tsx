@@ -715,25 +715,31 @@ export const ServiceManagement: React.FC<ServiceManagementProps> = ({
                 </div>
 
                 <div>
-                  <label
-                    htmlFor="srv-price-input"
-                    className="block text-xs font-semibold text-[#101B35] mb-1"
-                  >
-                    Harga Standar (Rp) *
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label
+                      htmlFor="srv-price-input"
+                      className="block text-xs font-semibold text-[#101B35]"
+                    >
+                      Harga Standar (Rp) *
+                    </label>
+                    <span className="text-[11px] font-mono font-semibold text-[#800020]">
+                      {formatRupiah(formData.price || 0)}
+                    </span>
+                  </div>
                   <input
                     id="srv-price-input"
                     type="number"
-                    required
                     min={0}
-                    step={50000}
-                    value={formData.price}
-                    onChange={(e) =>
+                    step="any"
+                    placeholder="Contoh: 35000"
+                    value={formData.price === 0 ? '' : formData.price}
+                    onChange={(e) => {
+                      const raw = e.target.value;
                       setFormData({
                         ...formData,
-                        price: Math.max(0, Number(e.target.value) || 0),
-                      })
-                    }
+                        price: raw === '' ? 0 : Math.max(0, Number(raw)),
+                      });
+                    }}
                     className="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-[#800020]"
                   />
                 </div>
