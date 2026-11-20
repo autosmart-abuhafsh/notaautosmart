@@ -21,6 +21,17 @@
   ],
   "CLIENTS": [
     {
+      "id": "CLT-0005",
+      "client_name": "Es Dawet Palembang",
+      "contact_person": "Abu Hafs Abdul Aziz Palembang",
+      "phone": "0821255335335",
+      "whatsapp": "0821255335335",
+      "email": "esdawetpalembang@gmail.com",
+      "address": "Kota Palembang",
+      "notes": "Usaha Es Dawet Palembang",
+      "created_at": "2026-11-20T10:45:15.210Z"
+    },
+    {
       "id": "CLT-0001",
       "client_name": "PT Nusantara Logistik Mandiri",
       "contact_person": "Hendra Wijaya",
@@ -555,6 +566,13 @@
     }
   ],
   "ACTIVITY_LOGS": [
+    {
+      "id": "LOG-0002-5210",
+      "user_id": "USR-0001",
+      "activity": "CREATE_CLIENT",
+      "description": "Menambahkan pelanggan Es Dawet Palembang (CLT-0005)",
+      "timestamp": "2026-11-20T10:45:15.210Z"
+    },
     {
       "id": "LOG-0001",
       "user_id": "USR-0001",

@@ -1,13 +1,80 @@
 /**
  * ============================================================================
  * AUTOSMART INVOICE & BILLING MANAGEMENT SYSTEM
- * File 2 dari 2 : Code.gs (Server API Web App & Penyimpanan Nota/Invoice)
+ * File 2 dari 2 : Code.gs (Server API Web App & Penyimpanan Otomatis 8 Sheet)
  * Pengembang    : Autosmart Digital Solutions
  * Zona Waktu    : Asia/Jakarta (WIB)
  * ============================================================================
  */
 
 var API_SECRET = '';
+
+var DEFAULT_SCHEMA_ = {
+  USERS: ['id', 'name', 'email', 'password_hash', 'role', 'status', 'created_at'],
+  CLIENTS: ['id', 'client_name', 'contact_person', 'phone', 'whatsapp', 'email', 'address', 'notes', 'created_at'],
+  SERVICES: ['id', 'service_name', 'category', 'description', 'unit', 'price', 'status', 'created_at'],
+  INVOICES: ['id', 'invoice_number', 'client_id', 'issue_date', 'due_date', 'subtotal', 'discount', 'additional_cost', 'tax_rate', 'tax_amount', 'grand_total', 'amount_paid', 'balance', 'status', 'notes', 'created_at', 'updated_at'],
+  INVOICE_ITEMS: ['id', 'invoice_id', 'service_id', 'description', 'quantity', 'unit', 'unit_price', 'discount', 'total'],
+  PAYMENTS: ['id', 'receipt_number', 'invoice_id', 'payment_date', 'amount', 'payment_method', 'reference_number', 'notes', 'created_at'],
+  COMPANY_SETTINGS: ['id', 'setting_key', 'setting_value', 'updated_at'],
+  ACTIVITY_LOGS: ['id', 'user_id', 'activity', 'description', 'timestamp']
+};
+
+function getSchema_() {
+  return (typeof SCHEMA_DEFINITION !== 'undefined' && SCHEMA_DEFINITION)
+    ? SCHEMA_DEFINITION
+    : DEFAULT_SCHEMA_;
+}
+
+function ensureDatabaseReady_() {
+  if (typeof setupAutosmartDatabase === 'function') {
+    return setupAutosmartDatabase();
+  }
+  var ss = resolveSpreadsheet_();
+  var schema = getSchema_();
+  var names = Object.keys(schema);
+  for (var i = 0; i < names.length; i++) {
+    var sName = names[i];
+    var headers = schema[sName];
+    var sheet = ss.getSheetByName(sName) || ss.insertSheet(sName);
+    if (sheet.getLastColumn() === 0) {
+      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      var hr = sheet.getRange(1, 1, 1, headers.length);
+      hr.setBackground('#101B35').setFontColor('#FFFFFF').setFontWeight('bold');
+      sheet.setFrozenRows(1);
+    }
+  }
+  SpreadsheetApp.flush();
+  return {
+    spreadsheetId: ss.getId(),
+    spreadsheetName: ss.getName(),
+    spreadsheetUrl: ss.getUrl(),
+    sheets: names
+  };
+}
+
+function resolveSpreadsheet_() {
+  if (typeof getOrCreateSpreadsheet_ === 'function') {
+    return getOrCreateSpreadsheet_();
+  }
+  try {
+    var active = SpreadsheetApp.getActiveSpreadsheet();
+    if (active) {
+      PropertiesService.getScriptProperties().setProperty('SPREADSHEET_ID', active.getId());
+      return active;
+    }
+  } catch (e) {}
+  var props = PropertiesService.getScriptProperties();
+  var savedId = props.getProperty('SPREADSHEET_ID');
+  if (savedId) {
+    try {
+      return SpreadsheetApp.openById(savedId);
+    } catch (e) {}
+  }
+  var created = SpreadsheetApp.create('AUTOSMART_INVOICE_DATABASE');
+  props.setProperty('SPREADSHEET_ID', created.getId());
+  return created;
+}
 
 function doGet(e) {
   return handleRequest_(e, 'GET');
@@ -22,7 +89,8 @@ function handleRequest_(e, method) {
   lock.waitLock(25000);
 
   try {
-    var ss = getOrCreateSpreadsheet_();
+    var ss = resolveSpreadsheet_();
+    var schema = getSchema_();
     var body = {};
 
     if (method === 'POST' && e && e.postData && e.postData.contents) {
@@ -34,7 +102,11 @@ function handleRequest_(e, method) {
     }
 
     var action = (e && e.parameter && e.parameter.action) || body.action || 'ping';
-    var incomingSecret = (e && e.parameter && e.parameter.secret) || body.secret || '';
+    var incomingSecret =
+      (e && e.parameter && e.parameter.secret) ||
+      body.secret ||
+      body.apiSecret ||
+      '';
 
     var configuredSecret = PropertiesService.getScriptProperties().getProperty('API_SECRET') || API_SECRET;
     if (configuredSecret && incomingSecret !== configuredSecret) {
@@ -45,7 +117,7 @@ function handleRequest_(e, method) {
     }
 
     if (action === 'ping') {
-      setupAutosmartDatabase();
+      ensureDatabaseReady_();
       return jsonResponse_({
         ok: true,
         message: 'Terhubung ke Server Google Apps Script Autosmart Invoice',
@@ -58,7 +130,7 @@ function handleRequest_(e, method) {
     }
 
     if (action === 'setup') {
-      var setupInfo = setupAutosmartDatabase();
+      var setupInfo = ensureDatabaseReady_();
       return jsonResponse_({
         ok: true,
         setup: setupInfo
@@ -66,9 +138,9 @@ function handleRequest_(e, method) {
     }
 
     if (action === 'exportAll') {
-      setupAutosmartDatabase();
+      ensureDatabaseReady_();
       var dump = {};
-      var names = Object.keys(SCHEMA_DEFINITION);
+      var names = Object.keys(schema);
       for (var i = 0; i < names.length; i++) {
         dump[names[i]] = readSheetRows_(ss, names[i]);
       }
@@ -76,22 +148,29 @@ function handleRequest_(e, method) {
         ok: true,
         spreadsheetName: ss.getName(),
         spreadsheetUrl: ss.getUrl(),
+        counts: getSheetRowCounts_(ss),
         data: dump,
         exportedAt: new Date().toISOString()
       });
     }
 
     if (action === 'syncAll' && body.payload) {
-      setupAutosmartDatabase();
+      ensureDatabaseReady_();
       var payload = body.payload;
-      var sheetNames = Object.keys(SCHEMA_DEFINITION);
+      var sheetNames = Object.keys(schema);
 
       for (var j = 0; j < sheetNames.length; j++) {
         var sName = sheetNames[j];
         if (Array.isArray(payload[sName])) {
-          writeSheetRows_(ss, sName, SCHEMA_DEFINITION[sName], payload[sName]);
+          writeSheetRows_(ss, sName, schema[sName], payload[sName]);
         }
       }
+
+      if (body.activityLog && body.activityLog.id) {
+        upsertRowById_(ss, 'ACTIVITY_LOGS', schema.ACTIVITY_LOGS, body.activityLog);
+      }
+
+      SpreadsheetApp.flush();
 
       return jsonResponse_({
         ok: true,
@@ -102,12 +181,35 @@ function handleRequest_(e, method) {
       });
     }
 
+    if (action === 'upsertRow' && body.sheetName && body.record) {
+      ensureDatabaseReady_();
+      var targetSheet = String(body.sheetName);
+      if (!schema[targetSheet]) {
+        return jsonResponse_({ ok: false, error: 'Sheet tidak dikenali: ' + targetSheet });
+      }
+      upsertRowById_(ss, targetSheet, schema[targetSheet], body.record);
+      if (body.activityLog && body.activityLog.id) {
+        upsertRowById_(ss, 'ACTIVITY_LOGS', schema.ACTIVITY_LOGS, body.activityLog);
+      }
+      SpreadsheetApp.flush();
+      return jsonResponse_({
+        ok: true,
+        sheetName: targetSheet,
+        counts: getSheetRowCounts_(ss),
+        savedAt: new Date().toISOString()
+      });
+    }
+
     if (action === 'saveInvoice' && body.invoice) {
-      setupAutosmartDatabase();
-      upsertRowById_(ss, 'INVOICES', SCHEMA_DEFINITION.INVOICES, body.invoice);
+      ensureDatabaseReady_();
+      upsertRowById_(ss, 'INVOICES', schema.INVOICES, body.invoice);
       if (Array.isArray(body.items)) {
         replaceInvoiceItems_(ss, body.invoice.id, body.items);
       }
+      if (body.activityLog && body.activityLog.id) {
+        upsertRowById_(ss, 'ACTIVITY_LOGS', schema.ACTIVITY_LOGS, body.activityLog);
+      }
+      SpreadsheetApp.flush();
       return jsonResponse_({
         ok: true,
         invoice_number: body.invoice.invoice_number,
@@ -116,11 +218,15 @@ function handleRequest_(e, method) {
     }
 
     if (action === 'savePayment' && body.payment) {
-      setupAutosmartDatabase();
-      upsertRowById_(ss, 'PAYMENTS', SCHEMA_DEFINITION.PAYMENTS, body.payment);
+      ensureDatabaseReady_();
+      upsertRowById_(ss, 'PAYMENTS', schema.PAYMENTS, body.payment);
       if (body.invoice) {
-        upsertRowById_(ss, 'INVOICES', SCHEMA_DEFINITION.INVOICES, body.invoice);
+        upsertRowById_(ss, 'INVOICES', schema.INVOICES, body.invoice);
       }
+      if (body.activityLog && body.activityLog.id) {
+        upsertRowById_(ss, 'ACTIVITY_LOGS', schema.ACTIVITY_LOGS, body.activityLog);
+      }
+      SpreadsheetApp.flush();
       return jsonResponse_({
         ok: true,
         receipt_number: body.payment.receipt_number,
@@ -156,7 +262,8 @@ function sanitizeCell_(val) {
 
 function getSheetRowCounts_(ss) {
   var counts = {};
-  var names = Object.keys(SCHEMA_DEFINITION);
+  var schema = getSchema_();
+  var names = Object.keys(schema);
   for (var i = 0; i < names.length; i++) {
     var s = ss.getSheetByName(names[i]);
     counts[names[i]] = s ? Math.max(0, s.getLastRow() - 1) : 0;
@@ -200,7 +307,11 @@ function writeSheetRows_(ss, sheetName, headers, records) {
     var rec = records[i];
     var row = [];
     for (var c = 0; c < headers.length; c++) {
-      var val = rec[headers[c]];
+      var colName = headers[c];
+      var val = rec[colName];
+      if (colName === 'password_hash' && (val === undefined || val === null || val === '')) {
+        val = 'scrypt_hash_protected';
+      }
       row.push(val === undefined || val === null ? '' : sanitizeCell_(val));
     }
     matrix.push(row);
@@ -232,6 +343,7 @@ function upsertRowById_(ss, sheetName, headers, record) {
 }
 
 function replaceInvoiceItems_(ss, invoiceId, newItems) {
+  var schema = getSchema_();
   var existing = readSheetRows_(ss, 'INVOICE_ITEMS');
   var filtered = [];
   for (var i = 0; i < existing.length; i++) {
@@ -242,7 +354,7 @@ function replaceInvoiceItems_(ss, invoiceId, newItems) {
   for (var j = 0; j < newItems.length; j++) {
     filtered.push(newItems[j]);
   }
-  writeSheetRows_(ss, 'INVOICE_ITEMS', SCHEMA_DEFINITION.INVOICE_ITEMS, filtered);
+  writeSheetRows_(ss, 'INVOICE_ITEMS', schema.INVOICE_ITEMS, filtered);
 }
 
 function jsonResponse_(obj) {

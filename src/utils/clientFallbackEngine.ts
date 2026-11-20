@@ -27,7 +27,7 @@ interface StoredUser extends User {
   password_plain?: string;
 }
 
-interface LocalDbState {
+export interface LocalDbState {
   USERS: StoredUser[];
   CLIENTS: Client[];
   SERVICES: ServiceItem[];
@@ -38,10 +38,11 @@ interface LocalDbState {
   ACTIVITY_LOGS: ActivityLog[];
 }
 
-interface GasLocalConfig {
+export interface GasLocalConfig {
   webAppUrl: string;
   apiSecret: string;
   lastSync: string | null;
+  spreadsheetName?: string;
 }
 
 export const DEFAULT_SETTINGS: CompanySettingsMap = {
@@ -75,7 +76,15 @@ export const DEFAULT_SETTINGS: CompanySettingsMap = {
 
 function getEnvGasUrl(): string {
   try {
-    return (import.meta.env?.VITE_GAS_WEB_APP_URL as string) || '';
+    return ((import.meta.env?.VITE_GAS_WEB_APP_URL as string) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function getEnvGasSecret(): string {
+  try {
+    return ((import.meta.env?.VITE_GAS_API_SECRET as string) || '').trim();
   } catch {
     return '';
   }
@@ -83,14 +92,16 @@ function getEnvGasUrl(): string {
 
 export function loadLocalGasConfig(): GasLocalConfig {
   const envUrl = getEnvGasUrl();
+  const envSecret = getEnvGasSecret();
   try {
     const raw = localStorage.getItem(STORAGE_GAS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<GasLocalConfig>;
       return {
-        webAppUrl: parsed.webAppUrl || envUrl,
-        apiSecret: parsed.apiSecret || '',
+        webAppUrl: (parsed.webAppUrl || envUrl || '').trim(),
+        apiSecret: (parsed.apiSecret || envSecret || '').trim(),
         lastSync: parsed.lastSync || null,
+        spreadsheetName: parsed.spreadsheetName || 'AUTOSMART_INVOICE_DATABASE',
       };
     }
   } catch {
@@ -98,8 +109,9 @@ export function loadLocalGasConfig(): GasLocalConfig {
   }
   return {
     webAppUrl: envUrl,
-    apiSecret: '',
+    apiSecret: envSecret,
     lastSync: null,
+    spreadsheetName: 'AUTOSMART_INVOICE_DATABASE',
   };
 }
 
@@ -109,6 +121,31 @@ export function saveLocalGasConfig(cfg: GasLocalConfig): void {
   } catch {
     // ignore
   }
+}
+
+export function appendLocalActivityLog(
+  db: LocalDbState,
+  user: { id: string; name?: string } | null | undefined,
+  activity: string,
+  description: string
+): ActivityLog {
+  if (!Array.isArray(db.ACTIVITY_LOGS)) {
+    db.ACTIVITY_LOGS = [];
+  }
+  const nextNum = db.ACTIVITY_LOGS.length + 1;
+  const entry: ActivityLog = {
+    id: `LOG-${String(nextNum).padStart(4, '0')}-${Date.now().toString().slice(-4)}`,
+    user_id: user?.id || 'USR-0001',
+    user_name: user?.name || 'Administrator Autosmart',
+    activity,
+    description: description.trim(),
+    timestamp: new Date().toISOString(),
+  };
+  db.ACTIVITY_LOGS.unshift(entry);
+  if (db.ACTIVITY_LOGS.length > 300) {
+    db.ACTIVITY_LOGS.length = 300;
+  }
+  return entry;
 }
 
 function createSeedState(): LocalDbState {
@@ -251,6 +288,9 @@ export function loadLocalDb(): LocalDbState {
           }
         }
         parsed.SETTINGS = mergedSettings;
+        if (!Array.isArray(parsed.ACTIVITY_LOGS)) {
+          parsed.ACTIVITY_LOGS = [];
+        }
         return recomputeLocalDb(parsed);
       }
     }
@@ -271,6 +311,11 @@ export function saveLocalDb(db: LocalDbState): void {
   }
 }
 
+/**
+ * Merges server bootstrap data with browser localStorage safely.
+ * Protects against Vercel serverless cold-starts where the server's ephemeral /tmp database
+ * resets to 0 clients/invoices while the browser still has user-created records.
+ */
 export function mirrorBootstrapToLocalDb(boot: {
   clients?: Client[];
   services?: ServiceItem[];
@@ -280,25 +325,59 @@ export function mirrorBootstrapToLocalDb(boot: {
   users?: User[];
   activityLogs?: ActivityLog[];
 }): {
+  mergedDb: LocalDbState;
   mergedSettings: CompanySettingsMap;
   customSettingsToPush: Partial<CompanySettingsMap> | null;
+  localHadMoreData: boolean;
 } {
   const current = loadLocalDb();
-  if (Array.isArray(boot.clients)) current.CLIENTS = boot.clients;
-  if (Array.isArray(boot.services)) current.SERVICES = boot.services;
-  if (Array.isArray(boot.invoices)) {
-    current.INVOICES = boot.invoices.map(
-      ({ items: _it, client: _cl, ...rest }) => rest
-    );
-    const allItems: InvoiceLineItem[] = [];
-    for (const inv of boot.invoices) {
-      if (Array.isArray(inv.items)) {
-        allItems.push(...inv.items);
+  let localHadMoreData = false;
+
+  // Clients: if server returned non-empty OR local is also empty, use server;
+  // if server cold-started empty while local has clients, merge/keep local!
+  if (Array.isArray(boot.clients)) {
+    if (boot.clients.length > 0 || current.CLIENTS.length === 0) {
+      // Merge any local clients not in server by id if server had fewer
+      const serverIds = new Set(boot.clients.map((c) => c.id));
+      const missingLocal = current.CLIENTS.filter((c) => !serverIds.has(c.id));
+      if (boot.clients.length === 0 && missingLocal.length > 0) {
+        localHadMoreData = true;
+      } else {
+        current.CLIENTS = boot.clients;
       }
+    } else {
+      localHadMoreData = true;
     }
-    current.INVOICE_ITEMS = allItems;
   }
-  if (Array.isArray(boot.payments)) current.PAYMENTS = boot.payments;
+
+  if (Array.isArray(boot.services) && boot.services.length > 0) {
+    current.SERVICES = boot.services;
+  }
+
+  if (Array.isArray(boot.invoices)) {
+    if (boot.invoices.length > 0 || current.INVOICES.length === 0) {
+      current.INVOICES = boot.invoices.map(
+        ({ items: _it, client: _cl, ...rest }) => rest
+      );
+      const allItems: InvoiceLineItem[] = [];
+      for (const inv of boot.invoices) {
+        if (Array.isArray(inv.items)) {
+          allItems.push(...inv.items);
+        }
+      }
+      current.INVOICE_ITEMS = allItems;
+    } else {
+      localHadMoreData = true;
+    }
+  }
+
+  if (Array.isArray(boot.payments)) {
+    if (boot.payments.length > 0 || current.PAYMENTS.length === 0) {
+      current.PAYMENTS = boot.payments;
+    } else {
+      localHadMoreData = true;
+    }
+  }
 
   const mergedSettings: CompanySettingsMap = {
     ...DEFAULT_SETTINGS,
@@ -306,7 +385,6 @@ export function mirrorBootstrapToLocalDb(boot: {
   const customToPush: Partial<CompanySettingsMap> = {};
   let hasCustomToPush = false;
 
-  // Apply local custom settings first
   if (current.SETTINGS) {
     for (const [k, v] of Object.entries(current.SETTINGS)) {
       if (typeof v === 'string' && v.trim() !== '') {
@@ -315,7 +393,6 @@ export function mirrorBootstrapToLocalDb(boot: {
     }
   }
 
-  // Apply server settings, but if local had a custom uploaded data:image logo/qris while server only has default/empty, keep local and push to server
   if (boot.settings) {
     for (const [k, serverVal] of Object.entries(boot.settings)) {
       const cleanServer = typeof serverVal === 'string' ? serverVal.trim() : '';
@@ -343,14 +420,29 @@ export function mirrorBootstrapToLocalDb(boot: {
   }
 
   current.SETTINGS = mergedSettings;
+
   if (Array.isArray(boot.activityLogs)) {
-    current.ACTIVITY_LOGS = boot.activityLogs;
+    if (boot.activityLogs.length > 0) {
+      // Merge unique logs by id, sorted newest first
+      const byId = new Map<string, ActivityLog>();
+      for (const l of [...boot.activityLogs, ...current.ACTIVITY_LOGS]) {
+        if (l && l.id && !byId.has(l.id)) {
+          byId.set(l.id, l);
+        }
+      }
+      current.ACTIVITY_LOGS = Array.from(byId.values())
+        .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''))
+        .slice(0, 300);
+    }
   }
+
   saveLocalDb(current);
 
   return {
+    mergedDb: current,
     mergedSettings,
     customSettingsToPush: hasCustomToPush ? customToPush : null,
+    localHadMoreData,
   };
 }
 
@@ -384,60 +476,305 @@ function nextEntityId(existingIds: string[], prefix: string): string {
 }
 
 /**
- * Sends a CORS-safe POST request directly to Google Apps Script Web App
- * using Content-Type: text/plain;charset=utf-8 (avoids preflight OPTIONS error).
+ * Validates a Google Apps Script Web App URL and returns a helpful error message if misconfigured.
  */
-async function postToGasDirect(
+export function validateGasWebAppUrl(rawUrl: string): string | null {
+  const clean = rawUrl.trim();
+  if (!clean) return null;
+  if (!clean.startsWith('https://script.google.com/')) {
+    return 'URL harus diawali dengan https://script.google.com/macros/s/.../exec';
+  }
+  if (clean.includes('/home/projects/') || clean.endsWith('/edit')) {
+    return 'URL yang dimasukkan adalah URL Editor Apps Script (/edit), bukan URL Web App. Klik tombol biru "Deploy -> New deployment -> Web app" lalu salin Web App URL yang berakhiran /exec.';
+  }
+  if (clean.endsWith('/dev')) {
+    return 'URL berakhiran /dev hanya bisa diakses saat login pemilik. Gunakan URL Deployment produksi yang berakhiran /exec agar aplikasi dapat menyimpan data.';
+  }
+  return null;
+}
+
+/**
+ * Sends a CORS-safe POST request directly to Google Apps Script Web App
+ * using Content-Type: text/plain;charset=utf-8 (avoids preflight OPTIONS error on GitHub.io & Vercel).
+ */
+export async function postToGasDirect(
   webAppUrl: string,
   payload: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(webAppUrl, {
+  const urlErr = validateGasWebAppUrl(webAppUrl);
+  if (urlErr) {
+    throw new Error(urlErr);
+  }
+
+  const res = await fetch(webAppUrl.trim(), {
     method: 'POST',
+    redirect: 'follow',
     headers: {
       'Content-Type': 'text/plain;charset=utf-8',
     },
     body: JSON.stringify(payload),
   });
+
+  const rawText = await res.text();
   if (!res.ok) {
     throw new Error(`Google Apps Script merespons HTTP ${res.status}`);
   }
-  return (await res.json()) as Record<string, unknown>;
+
+  if (rawText.trim().startsWith('<')) {
+    throw new Error(
+      'Google Apps Script mengembalikan halaman HTML/Login (bukan JSON). Pastikan saat Deploy Web App di Apps Script: (1) Execute as = "Me", (2) Who has access = "Anyone / Siapa saja", dan (3) URL diakhiri /exec.'
+    );
+  }
+
+  try {
+    return JSON.parse(rawText) as Record<string, unknown>;
+  } catch {
+    throw new Error(
+      'Respons dari Google Apps Script bukan format JSON yang valid. Pastikan Code.gs sudah di-deploy ulang (Manage deployments -> Edit -> New version -> Deploy).'
+    );
+  }
 }
 
 export async function syncLocalDbToGasIfConfigured(
-  db: LocalDbState
-): Promise<void> {
+  db?: LocalDbState,
+  latestActivityLog?: ActivityLog
+): Promise<{
+  synced: boolean;
+  error?: string;
+  lastSync?: string | null;
+  spreadsheetName?: string;
+}> {
   const cfg = loadLocalGasConfig();
-  if (!cfg.webAppUrl) return;
+  if (!cfg.webAppUrl) {
+    return { synced: false };
+  }
+
+  const activeDb = db || loadLocalDb();
 
   try {
-    const settingsRows = Object.entries(db.SETTINGS).map(([k, v], idx) => ({
-      id: `SET-${String(idx + 1).padStart(3, '0')}`,
-      setting_key: k,
-      setting_value: v,
-      updated_at: new Date().toISOString(),
-    }));
+    const settingsRows = Object.entries(activeDb.SETTINGS).map(
+      ([k, v], idx) => ({
+        id: `SET-${String(idx + 1).padStart(3, '0')}`,
+        setting_key: k,
+        setting_value: v,
+        updated_at: new Date().toISOString(),
+      })
+    );
 
-    await postToGasDirect(cfg.webAppUrl, {
+    const response = await postToGasDirect(cfg.webAppUrl, {
       action: 'syncAll',
       apiSecret: cfg.apiSecret,
       secret: cfg.apiSecret,
+      activityLog: latestActivityLog,
       payload: {
-        USERS: db.USERS.map(({ password_plain: _p, ...u }) => u),
-        CLIENTS: db.CLIENTS,
-        SERVICES: db.SERVICES,
-        INVOICES: db.INVOICES,
-        INVOICE_ITEMS: db.INVOICE_ITEMS,
-        PAYMENTS: db.PAYMENTS,
+        USERS: activeDb.USERS.map(({ password_plain: _p, ...u }) => ({
+          ...u,
+          password_hash: 'scrypt_hash_protected',
+        })),
+        CLIENTS: activeDb.CLIENTS,
+        SERVICES: activeDb.SERVICES,
+        INVOICES: activeDb.INVOICES,
+        INVOICE_ITEMS: activeDb.INVOICE_ITEMS,
+        PAYMENTS: activeDb.PAYMENTS,
         COMPANY_SETTINGS: settingsRows,
-        ACTIVITY_LOGS: db.ACTIVITY_LOGS,
+        ACTIVITY_LOGS: activeDb.ACTIVITY_LOGS,
       },
     });
+
+    if (!response.ok) {
+      return {
+        synced: false,
+        error: String(
+          response.error || 'Google Apps Script menolak penyimpanan.'
+        ),
+      };
+    }
+
     cfg.lastSync = new Date().toISOString();
+    if (typeof response.spreadsheetName === 'string' && response.spreadsheetName) {
+      cfg.spreadsheetName = response.spreadsheetName;
+    }
     saveLocalGasConfig(cfg);
-  } catch {
-    // Non-blocking background sync
+    return {
+      synced: true,
+      lastSync: cfg.lastSync,
+      spreadsheetName: cfg.spreadsheetName,
+    };
+  } catch (err) {
+    return {
+      synced: false,
+      error:
+        err instanceof Error
+          ? err.message
+          : 'Gagal terhubung ke Google Apps Script.',
+    };
   }
+}
+
+/**
+ * Pulls all 8 sheets directly from Google Apps Script into localStorage DB.
+ */
+export async function pullFromGasDirectToLocalDb(
+  user?: { id: string; name?: string } | null
+): Promise<{
+  ok: boolean;
+  lastSync: string | null;
+  spreadsheetName?: string;
+  error?: string;
+}> {
+  const cfg = loadLocalGasConfig();
+  if (!cfg.webAppUrl) {
+    throw new Error('URL Web App Google Apps Script belum dikonfigurasi.');
+  }
+
+  const res = await postToGasDirect(cfg.webAppUrl, {
+    action: 'exportAll',
+    apiSecret: cfg.apiSecret,
+    secret: cfg.apiSecret,
+  });
+
+  if (!res.ok || !res.data) {
+    throw new Error(
+      String(res.error || 'Gagal menarik data dari Google Sheets.')
+    );
+  }
+
+  const db = loadLocalDb();
+  const remote = res.data as Record<string, Array<Record<string, unknown>>>;
+
+  if (Array.isArray(remote.CLIENTS)) {
+    db.CLIENTS = remote.CLIENTS.map((c) => ({
+      id: String(c.id || ''),
+      client_name: String(c.client_name || ''),
+      contact_person: String(c.contact_person || ''),
+      phone: String(c.phone || ''),
+      whatsapp: String(c.whatsapp || c.phone || ''),
+      email: String(c.email || ''),
+      address: String(c.address || ''),
+      notes: String(c.notes || ''),
+      created_at: String(c.created_at || new Date().toISOString()),
+    }));
+  }
+
+  if (Array.isArray(remote.SERVICES) && remote.SERVICES.length > 0) {
+    db.SERVICES = remote.SERVICES.map((s) => ({
+      id: String(s.id || ''),
+      service_name: String(s.service_name || ''),
+      category: String(s.category || 'Layanan Digital Lainnya'),
+      description: String(s.description || ''),
+      unit: String(s.unit || 'Paket'),
+      price: Math.round(Number(s.price ?? s.default_price) || 0),
+      status: s.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
+      created_at: String(s.created_at || new Date().toISOString()),
+    }));
+  }
+
+  if (Array.isArray(remote.INVOICES)) {
+    db.INVOICES = remote.INVOICES.map((inv) => ({
+      id: String(inv.id || ''),
+      invoice_number: String(inv.invoice_number || ''),
+      client_id: String(inv.client_id || ''),
+      issue_date: String(inv.issue_date ?? inv.invoice_date ?? ''),
+      due_date: String(inv.due_date || ''),
+      subtotal: Math.round(Number(inv.subtotal) || 0),
+      discount: Math.round(Number(inv.discount ?? inv.discount_value) || 0),
+      additional_cost: Math.round(
+        Number(inv.additional_cost ?? inv.additional_fee) || 0
+      ),
+      tax_rate: Number(inv.tax_rate) || 0,
+      tax_amount: Math.round(Number(inv.tax_amount) || 0),
+      grand_total: Math.round(Number(inv.grand_total) || 0),
+      amount_paid: Math.round(Number(inv.amount_paid) || 0),
+      balance: Math.round(
+        Number(inv.balance ?? inv.remaining_balance) || 0
+      ),
+      status:
+        (inv.status as Invoice['status']) ||
+        (inv.payment_status as Invoice['status']) ||
+        'Unpaid',
+      notes: String(inv.notes || ''),
+      created_at: String(inv.created_at || new Date().toISOString()),
+      updated_at: String(inv.updated_at || new Date().toISOString()),
+    }));
+  }
+
+  if (Array.isArray(remote.INVOICE_ITEMS)) {
+    db.INVOICE_ITEMS = remote.INVOICE_ITEMS.map((it) => ({
+      id: String(it.id || ''),
+      invoice_id: String(it.invoice_id || ''),
+      service_id: String(it.service_id || ''),
+      description: String(it.description || ''),
+      quantity: Number(it.quantity) || 1,
+      unit: String(it.unit || 'Paket'),
+      unit_price: Math.round(Number(it.unit_price) || 0),
+      discount: Math.round(Number(it.discount) || 0),
+      total: Math.round(Number(it.total) || 0),
+    }));
+  }
+
+  if (Array.isArray(remote.PAYMENTS)) {
+    db.PAYMENTS = remote.PAYMENTS.map((p) => ({
+      id: String(p.id || ''),
+      receipt_number: String(p.receipt_number ?? p.payment_number ?? ''),
+      invoice_id: String(p.invoice_id || ''),
+      payment_date: String(p.payment_date || ''),
+      amount: Math.round(Number(p.amount) || 0),
+      payment_method:
+        (p.payment_method as Payment['payment_method']) || 'Transfer Bank',
+      reference_number: String(p.reference_number || ''),
+      notes: String(p.notes || ''),
+      created_at: String(p.created_at || new Date().toISOString()),
+    }));
+  }
+
+  if (
+    Array.isArray(remote.COMPANY_SETTINGS) &&
+    remote.COMPANY_SETTINGS.length > 0
+  ) {
+    const nextSettings: CompanySettingsMap = { ...db.SETTINGS };
+    for (const row of remote.COMPANY_SETTINGS) {
+      const k = String(row.setting_key || '').trim();
+      const v = String(row.setting_value ?? '').trim();
+      if (k && v) {
+        nextSettings[k] = v;
+      }
+    }
+    db.SETTINGS = nextSettings;
+  }
+
+  if (Array.isArray(remote.ACTIVITY_LOGS) && remote.ACTIVITY_LOGS.length > 0) {
+    db.ACTIVITY_LOGS = remote.ACTIVITY_LOGS.map((l, idx) => ({
+      id: String(l.id || `LOG-R-${idx + 1}`),
+      user_id: String(l.user_id || 'USR-0001'),
+      user_name:
+        db.USERS.find((u) => u.id === String(l.user_id || ''))?.name ||
+        'Administrator Autosmart',
+      activity: String(l.activity || 'ACTIVITY'),
+      description: String(l.description || ''),
+      timestamp: String(l.timestamp || new Date().toISOString()),
+    }));
+  }
+
+  if (user) {
+    appendLocalActivityLog(
+      db,
+      user,
+      'PULL_DATABASE',
+      'Menarik data terbaru dari Google Sheets (AUTOSMART_INVOICE_DATABASE)'
+    );
+  }
+
+  saveLocalDb(db);
+  cfg.lastSync = new Date().toISOString();
+  if (typeof res.spreadsheetName === 'string' && res.spreadsheetName) {
+    cfg.spreadsheetName = res.spreadsheetName;
+  }
+  saveLocalGasConfig(cfg);
+  return {
+    ok: true,
+    lastSync: cfg.lastSync,
+    spreadsheetName: cfg.spreadsheetName,
+  };
 }
 
 export function authenticateLocalUser(
@@ -462,6 +799,15 @@ export function authenticateLocalUser(
   }
 
   const { password_plain: _p, ...safeUser } = found;
+  appendLocalActivityLog(
+    db,
+    safeUser,
+    'USER_LOGIN',
+    `${safeUser.name} (${safeUser.role}) masuk ke sistem.`
+  );
+  saveLocalDb(db);
+  void syncLocalDbToGasIfConfigured(db);
+
   const token = `local-token-${safeUser.id}-${Date.now()}`;
   return { token, user: safeUser };
 }
@@ -515,32 +861,62 @@ export async function handleClientFallbackApi(
 
   // 2. Bootstrap Endpoint
   if (url === '/api/bootstrap' && method === 'GET') {
-    const hydratedInvoices: Invoice[] = db.INVOICES.map((inv) => ({
+    // If GAS is configured and local has 0 clients/invoices and hasn't synced yet, try pulling from GAS once
+    if (
+      cfg.webAppUrl &&
+      db.CLIENTS.length === 0 &&
+      db.INVOICES.length === 0 &&
+      !cfg.lastSync
+    ) {
+      try {
+        await pullFromGasDirectToLocalDb();
+      } catch {
+        // continue with local state
+      }
+    }
+
+    const latestDb = loadLocalDb();
+    const latestCfg = loadLocalGasConfig();
+
+    const hydratedInvoices: Invoice[] = latestDb.INVOICES.map((inv) => ({
       ...inv,
-      items: db.INVOICE_ITEMS.filter((it) => it.invoice_id === inv.id),
-      client: db.CLIENTS.find((c) => c.id === inv.client_id),
+      items: latestDb.INVOICE_ITEMS.filter((it) => it.invoice_id === inv.id),
+      client: latestDb.CLIENTS.find((c) => c.id === inv.client_id),
     }));
 
+    const logsWithNames: ActivityLog[] = (latestDb.ACTIVITY_LOGS || []).map(
+      (log) => ({
+        ...log,
+        user_name:
+          log.user_name ||
+          latestDb.USERS.find((u) => u.id === log.user_id)?.name ||
+          'Administrator Autosmart',
+      })
+    );
+
     const databaseStatus: DatabaseStatus = {
-      mode: cfg.webAppUrl ? 'GOOGLE_SHEETS' : 'LOCAL_STORAGE',
-      connected: Boolean(cfg.webAppUrl),
-      spreadsheet_name: 'AUTOSMART_INVOICE_DATABASE',
-      gas_url_configured: Boolean(cfg.webAppUrl),
-      gas_url_masked: cfg.webAppUrl ? `${cfg.webAppUrl.slice(0, 38)}...` : '',
-      last_sync: cfg.lastSync,
-      message: cfg.webAppUrl
-        ? 'Terhubung ke Google Sheets melalui Google Apps Script'
+      mode: latestCfg.webAppUrl ? 'GOOGLE_SHEETS' : 'LOCAL_STORAGE',
+      connected: Boolean(latestCfg.webAppUrl),
+      spreadsheet_name:
+        latestCfg.spreadsheetName || 'AUTOSMART_INVOICE_DATABASE',
+      gas_url_configured: Boolean(latestCfg.webAppUrl),
+      gas_url_masked: latestCfg.webAppUrl
+        ? `${latestCfg.webAppUrl.slice(0, 42)}...`
+        : '',
+      last_sync: latestCfg.lastSync,
+      message: latestCfg.webAppUrl
+        ? 'Terhubung & Tersinkronisasi Otomatis ke Google Sheets (Google Apps Script)'
         : 'Database Persisten Aktif (Siap disinkronkan ke Google Sheets)',
     };
 
     return {
-      clients: db.CLIENTS,
-      services: db.SERVICES,
+      clients: latestDb.CLIENTS,
+      services: latestDb.SERVICES,
       invoices: hydratedInvoices,
-      payments: db.PAYMENTS,
-      settings: db.SETTINGS,
-      users: db.USERS.map(({ password_plain: _p, ...u }) => u),
-      activityLogs: db.ACTIVITY_LOGS,
+      payments: latestDb.PAYMENTS,
+      settings: latestDb.SETTINGS,
+      users: latestDb.USERS.map(({ password_plain: _p, ...u }) => u),
+      activityLogs: logsWithNames,
       databaseStatus,
     };
   }
@@ -562,9 +938,19 @@ export async function handleClientFallbackApi(
       created_at: new Date().toISOString(),
     };
     db.CLIENTS.unshift(newClient);
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'CREATE_CLIENT',
+      `Menambahkan pelanggan ${newClient.client_name} (${newClient.id})`
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
-    return { client: newClient };
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
+    return {
+      client: newClient,
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
+    };
   }
 
   if (url.startsWith('/api/clients/') && method === 'PUT') {
@@ -581,9 +967,19 @@ export async function handleClientFallbackApi(
       address: String(body.address || '').trim(),
       notes: String(body.notes || '').trim(),
     };
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'UPDATE_CLIENT',
+      `Memperbarui data pelanggan ${db.CLIENTS[idx].client_name} (${id})`
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
-    return { client: db.CLIENTS[idx] };
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
+    return {
+      client: db.CLIENTS[idx],
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
+    };
   }
 
   if (url.startsWith('/api/clients/') && method === 'DELETE') {
@@ -593,10 +989,21 @@ export async function handleClientFallbackApi(
         'Pelanggan memiliki riwayat invoice aktif dan tidak dapat dihapus.'
       );
     }
+    const target = db.CLIENTS.find((c) => c.id === id);
     db.CLIENTS = db.CLIENTS.filter((c) => c.id !== id);
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'DELETE_CLIENT',
+      `Menghapus pelanggan ${target?.client_name || id} (${id})`
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
-    return { ok: true };
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
+    return {
+      ok: true,
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
+    };
   }
 
   // 4. Services & Service Categories CRUD
@@ -607,12 +1014,20 @@ export async function handleClientFallbackApi(
     );
     const res = addServiceCategory(currentCats, String(body.category || ''));
     db.SETTINGS.service_categories = JSON.stringify(res.categories);
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'CREATE_CATEGORY',
+      `Menambahkan kategori layanan "${res.added}"`
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
     return {
       categories: res.categories,
       added: res.added,
       settings: db.SETTINGS,
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
     };
   }
 
@@ -621,21 +1036,31 @@ export async function handleClientFallbackApi(
       db.SETTINGS.service_categories,
       db.SERVICES
     );
+    const oldCat = String(body.oldCategory || '');
+    const newCat = String(body.newCategory || '');
     const res = renameServiceCategory(
       currentCats,
       db.SERVICES,
-      String(body.oldCategory || ''),
-      String(body.newCategory || '')
+      oldCat,
+      newCat
     );
     db.SETTINGS.service_categories = JSON.stringify(res.categories);
     db.SERVICES = res.services;
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'RENAME_CATEGORY',
+      `Mengubah nama kategori layanan "${oldCat}" menjadi "${newCat}"`
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
     return {
       categories: res.categories,
       services: db.SERVICES,
       updatedCount: res.updatedCount,
       settings: db.SETTINGS,
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
     };
   }
 
@@ -644,22 +1069,31 @@ export async function handleClientFallbackApi(
       db.SETTINGS.service_categories,
       db.SERVICES
     );
+    const catName = String(body.category || '');
     const res = deleteServiceCategory(
       currentCats,
       db.SERVICES,
-      String(body.category || ''),
+      catName,
       body.fallbackCategory ? String(body.fallbackCategory) : undefined
     );
     db.SETTINGS.service_categories = JSON.stringify(res.categories);
     db.SERVICES = res.services;
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'DELETE_CATEGORY',
+      `Menghapus kategori layanan "${catName}"`
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
     return {
       categories: res.categories,
       services: db.SERVICES,
       reassignedCount: res.reassignedCount,
       fallbackUsed: res.fallbackUsed,
       settings: db.SETTINGS,
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
     };
   }
 
@@ -669,11 +1103,19 @@ export async function handleClientFallbackApi(
       new Set([...DEFAULT_SERVICE_CATEGORIES, ...merged])
     );
     db.SETTINGS.service_categories = JSON.stringify(resetCats);
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'RESET_CATEGORIES',
+      'Memulihkan daftar kategori layanan standar'
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
     return {
       categories: resetCats,
       settings: db.SETTINGS,
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
     };
   }
 
@@ -704,9 +1146,19 @@ export async function handleClientFallbackApi(
       currentCats.push(cleanCategory);
       db.SETTINGS.service_categories = JSON.stringify(currentCats);
     }
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'CREATE_SERVICE',
+      `Menambahkan layanan ${newService.service_name} (${newService.id}) dengan harga Rp ${newService.price.toLocaleString('id-ID')}`
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
-    return { service: newService };
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
+    return {
+      service: newService,
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
+    };
   }
 
   if (url.startsWith('/api/services/') && method === 'PUT') {
@@ -734,17 +1186,38 @@ export async function handleClientFallbackApi(
       currentCats.push(cleanCategory);
       db.SETTINGS.service_categories = JSON.stringify(currentCats);
     }
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'UPDATE_SERVICE',
+      `Memperbarui layanan ${db.SERVICES[idx].service_name} (${id})`
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
-    return { service: db.SERVICES[idx] };
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
+    return {
+      service: db.SERVICES[idx],
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
+    };
   }
 
   if (url.startsWith('/api/services/') && method === 'DELETE') {
     const id = url.split('/').pop() || '';
+    const target = db.SERVICES.find((s) => s.id === id);
     db.SERVICES = db.SERVICES.filter((s) => s.id !== id);
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'DELETE_SERVICE',
+      `Menghapus layanan ${target?.service_name || id} (${id})`
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
-    return { ok: true };
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
+    return {
+      ok: true,
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
+    };
   }
 
   // 5. Invoices CRUD
@@ -789,8 +1262,7 @@ export async function handleClientFallbackApi(
     });
 
     const now = new Date().toISOString();
-    const issueDate =
-      String(body.issue_date || '') || now.split('T')[0];
+    const issueDate = String(body.issue_date || '') || now.split('T')[0];
     const dueDate = String(body.due_date || '') || issueDate;
 
     const newInvoice: Invoice = {
@@ -820,15 +1292,24 @@ export async function handleClientFallbackApi(
 
     db.INVOICES.unshift(newInvoice);
     db.INVOICE_ITEMS.push(...newItems);
+    const client = db.CLIENTS.find((c) => c.id === newInvoice.client_id);
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'CREATE_INVOICE',
+      `Membuat invoice ${invoiceNumber} untuk ${client?.client_name || newInvoice.client_id} senilai Rp ${newInvoice.grand_total.toLocaleString('id-ID')}`
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
 
     return {
       invoice: {
         ...newInvoice,
         items: newItems,
-        client: db.CLIENTS.find((c) => c.id === newInvoice.client_id),
+        client,
       },
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
     };
   }
 
@@ -892,15 +1373,20 @@ export async function handleClientFallbackApi(
         amountPaid: existing.amount_paid,
         dueDate,
       }),
-      notes:
-        body.notes !== undefined ? String(body.notes) : existing.notes,
+      notes: body.notes !== undefined ? String(body.notes) : existing.notes,
       updated_at: new Date().toISOString(),
     };
 
     db.INVOICE_ITEMS = db.INVOICE_ITEMS.filter((it) => it.invoice_id !== id);
     db.INVOICE_ITEMS.push(...newItems);
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'UPDATE_INVOICE',
+      `Memperbarui invoice ${existing.invoice_number}`
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
 
     return {
       invoice: {
@@ -908,17 +1394,30 @@ export async function handleClientFallbackApi(
         items: newItems,
         client: db.CLIENTS.find((c) => c.id === db.INVOICES[idx].client_id),
       },
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
     };
   }
 
   if (url.startsWith('/api/invoices/') && method === 'DELETE') {
     const id = url.split('/').pop() || '';
+    const target = db.INVOICES.find((i) => i.id === id);
     db.INVOICES = db.INVOICES.filter((i) => i.id !== id);
     db.INVOICE_ITEMS = db.INVOICE_ITEMS.filter((it) => it.invoice_id !== id);
     db.PAYMENTS = db.PAYMENTS.filter((p) => p.invoice_id !== id);
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'DELETE_INVOICE',
+      `Menghapus invoice ${target?.invoice_number || id} beserta item terkait`
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
-    return { ok: true };
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
+    return {
+      ok: true,
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
+    };
   }
 
   // 6. Payments CRUD
@@ -945,12 +1444,23 @@ export async function handleClientFallbackApi(
       created_at: new Date().toISOString(),
     };
     db.PAYMENTS.unshift(newPayment);
-    saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
     const updatedInvoice = db.INVOICES.find(
       (i) => i.id === newPayment.invoice_id
     );
-    return { payment: newPayment, invoice: updatedInvoice };
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'RECORD_PAYMENT',
+      `Mencatat pembayaran ${receiptNumber} sebesar Rp ${newPayment.amount.toLocaleString('id-ID')} untuk invoice ${updatedInvoice?.invoice_number || newPayment.invoice_id}`
+    );
+    saveLocalDb(db);
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
+    return {
+      payment: newPayment,
+      invoice: updatedInvoice,
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
+    };
   }
 
   if (url.startsWith('/api/payments/') && method === 'PUT') {
@@ -961,24 +1471,44 @@ export async function handleClientFallbackApi(
       ...db.PAYMENTS[idx],
       payment_date: String(body.payment_date || db.PAYMENTS[idx].payment_date),
       amount: Math.max(1, Math.round(Number(body.amount) || 0)),
-      payment_method:
-        body.payment_method || db.PAYMENTS[idx].payment_method,
+      payment_method: body.payment_method || db.PAYMENTS[idx].payment_method,
       reference_number: String(
         body.reference_number ?? db.PAYMENTS[idx].reference_number
       ),
       notes: String(body.notes ?? db.PAYMENTS[idx].notes),
     };
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'UPDATE_PAYMENT',
+      `Memperbarui catatan pembayaran ${db.PAYMENTS[idx].receipt_number}`
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
-    return { payment: db.PAYMENTS[idx] };
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
+    return {
+      payment: db.PAYMENTS[idx],
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
+    };
   }
 
   if (url.startsWith('/api/payments/') && method === 'DELETE') {
     const id = url.split('/').pop() || '';
+    const target = db.PAYMENTS.find((p) => p.id === id);
     db.PAYMENTS = db.PAYMENTS.filter((p) => p.id !== id);
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'DELETE_PAYMENT',
+      `Menghapus bukti pembayaran ${target?.receipt_number || id}`
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
-    return { ok: true };
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
+    return {
+      ok: true,
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
+    };
   }
 
   // 7. Settings & Users
@@ -987,9 +1517,19 @@ export async function handleClientFallbackApi(
       ...db.SETTINGS,
       ...(body as Partial<CompanySettingsMap>),
     };
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'UPDATE_SETTINGS',
+      'Memperbarui pengaturan identitas perusahaan dan konfigurasi invoice'
+    );
     saveLocalDb(db);
-    await syncLocalDbToGasIfConfigured(db);
-    return { settings: db.SETTINGS };
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
+    return {
+      settings: db.SETTINGS,
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
+    };
   }
 
   if (url === '/api/users' && method === 'POST') {
@@ -1006,9 +1546,20 @@ export async function handleClientFallbackApi(
       created_at: new Date().toISOString(),
     };
     db.USERS.push(newUser);
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'CREATE_USER',
+      `Menambahkan pengguna ${newUser.name} (${newUser.role})`
+    );
     saveLocalDb(db);
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
     const { password_plain: _p, ...safe } = newUser;
-    return { user: safe };
+    return {
+      user: safe,
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
+    };
   }
 
   if (url.startsWith('/api/users/') && method === 'PUT') {
@@ -1020,23 +1571,80 @@ export async function handleClientFallbackApi(
       role: body.role || db.USERS[idx].role,
       status: body.status || db.USERS[idx].status,
     };
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'UPDATE_USER',
+      `Memperbarui hak akses / profil pengguna ${db.USERS[idx].name}`
+    );
     saveLocalDb(db);
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
     const { password_plain: _p, ...safe } = db.USERS[idx];
-    return { user: safe };
+    return {
+      user: safe,
+      gasSynced: syncRes.synced,
+      gasError: syncRes.error,
+    };
   }
 
   // 8. Google Apps Script Database Endpoints (Direct Browser -> GAS)
   if (url === '/api/database/config' && method === 'POST') {
+    const cleanUrl = String(body.webAppUrl || '').trim();
+    const urlErr = validateGasWebAppUrl(cleanUrl);
+    if (urlErr) {
+      throw new Error(urlErr);
+    }
+
     const nextCfg: GasLocalConfig = {
-      webAppUrl: String(body.webAppUrl || '').trim(),
+      webAppUrl: cleanUrl,
       apiSecret: String(body.apiSecret || '').trim(),
       lastSync: cfg.lastSync,
+      spreadsheetName: cfg.spreadsheetName || 'AUTOSMART_INVOICE_DATABASE',
     };
     saveLocalGasConfig(nextCfg);
+
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'CONFIGURE_DATABASE',
+      cleanUrl
+        ? 'Menghubungkan & menyinkronkan aplikasi ke Google Apps Script Web App'
+        : 'Mengaktifkan mode penyimpanan lokal'
+    );
+    saveLocalDb(db);
+
+    let autoSyncRes: {
+      synced: boolean;
+      error?: string;
+      spreadsheetName?: string;
+    } = { synced: false };
+
     if (nextCfg.webAppUrl) {
-      await syncLocalDbToGasIfConfigured(db);
+      autoSyncRes = await syncLocalDbToGasIfConfigured(db, log);
+      if (!autoSyncRes.synced && autoSyncRes.error) {
+        throw new Error(autoSyncRes.error);
+      }
     }
-    return { ok: true };
+
+    const refreshed = loadLocalGasConfig();
+    return {
+      ok: true,
+      autoSynced: autoSyncRes.synced,
+      databaseStatus: {
+        mode: refreshed.webAppUrl ? 'GOOGLE_SHEETS' : 'LOCAL_STORAGE',
+        connected: Boolean(refreshed.webAppUrl),
+        spreadsheet_name:
+          refreshed.spreadsheetName || 'AUTOSMART_INVOICE_DATABASE',
+        gas_url_configured: Boolean(refreshed.webAppUrl),
+        gas_url_masked: refreshed.webAppUrl
+          ? `${refreshed.webAppUrl.slice(0, 42)}...`
+          : '',
+        last_sync: refreshed.lastSync,
+        message: refreshed.webAppUrl
+          ? 'Terhubung & Tersinkronisasi Otomatis ke Google Sheets (Google Apps Script)'
+          : 'Database Persisten Aktif (Siap disinkronkan ke Google Sheets)',
+      },
+    };
   }
 
   if (url === '/api/database/test' && method === 'POST') {
@@ -1060,98 +1668,33 @@ export async function handleClientFallbackApi(
 
   if (url === '/api/database/sync' && method === 'POST') {
     if (!cfg.webAppUrl) {
+      throw new Error('URL Web App Google Apps Script belum dikonfigurasi.');
+    }
+    const log = appendLocalActivityLog(
+      db,
+      currentUser,
+      'SYNC_DATABASE',
+      'Sinkronisasi seluruh 8 sheet ke Google Sheets (AUTOSMART_INVOICE_DATABASE) berhasil'
+    );
+    saveLocalDb(db);
+    const syncRes = await syncLocalDbToGasIfConfigured(db, log);
+    if (!syncRes.synced) {
       throw new Error(
-        'URL Web App Google Apps Script belum dikonfigurasi.'
+        syncRes.error || 'Gagal menyinkronkan data ke Google Sheets.'
       );
     }
-    await syncLocalDbToGasIfConfigured(db);
-    return { ok: true, last_sync: loadLocalGasConfig().lastSync };
+    return {
+      ok: true,
+      last_sync: syncRes.lastSync,
+    };
   }
 
   if (url === '/api/database/pull' && method === 'POST') {
-    if (!cfg.webAppUrl) {
-      throw new Error(
-        'URL Web App Google Apps Script belum dikonfigurasi.'
-      );
-    }
-    const res = await postToGasDirect(cfg.webAppUrl, {
-      action: 'exportAll',
-      apiSecret: cfg.apiSecret,
-      secret: cfg.apiSecret,
-    });
-    if (!res.ok || !res.data) {
-      throw new Error(
-        String(res.error || 'Gagal menarik data dari Google Sheets.')
-      );
-    }
-    const remote = res.data as Record<string, Array<Record<string, unknown>>>;
-    if (Array.isArray(remote.CLIENTS) && remote.CLIENTS.length > 0) {
-      db.CLIENTS = remote.CLIENTS as unknown as Client[];
-    }
-    if (Array.isArray(remote.SERVICES) && remote.SERVICES.length > 0) {
-      db.SERVICES = remote.SERVICES.map((s) => ({
-        id: String(s.id || ''),
-        service_name: String(s.service_name || ''),
-        category: String(s.category || 'Layanan Digital Lainnya'),
-        description: String(s.description || ''),
-        unit: String(s.unit || 'Paket'),
-        price: Math.round(Number(s.price ?? s.default_price) || 0),
-        status: s.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
-        created_at: String(s.created_at || new Date().toISOString()),
-      }));
-    }
-    if (Array.isArray(remote.INVOICES) && remote.INVOICES.length > 0) {
-      db.INVOICES = remote.INVOICES.map((inv) => ({
-        id: String(inv.id || ''),
-        invoice_number: String(inv.invoice_number || ''),
-        client_id: String(inv.client_id || ''),
-        issue_date: String(inv.issue_date ?? inv.invoice_date ?? ''),
-        due_date: String(inv.due_date || ''),
-        subtotal: Math.round(Number(inv.subtotal) || 0),
-        discount: Math.round(Number(inv.discount ?? inv.discount_value) || 0),
-        additional_cost: Math.round(
-          Number(inv.additional_cost ?? inv.additional_fee) || 0
-        ),
-        tax_rate: Number(inv.tax_rate) || 0,
-        tax_amount: Math.round(Number(inv.tax_amount) || 0),
-        grand_total: Math.round(Number(inv.grand_total) || 0),
-        amount_paid: Math.round(Number(inv.amount_paid) || 0),
-        balance: Math.round(
-          Number(inv.balance ?? inv.remaining_balance) || 0
-        ),
-        status:
-          (inv.status as Invoice['status']) ||
-          (inv.payment_status as Invoice['status']) ||
-          'Unpaid',
-        notes: String(inv.notes || ''),
-        created_at: String(inv.created_at || new Date().toISOString()),
-        updated_at: String(inv.updated_at || new Date().toISOString()),
-      }));
-    }
-    if (
-      Array.isArray(remote.INVOICE_ITEMS) &&
-      remote.INVOICE_ITEMS.length > 0
-    ) {
-      db.INVOICE_ITEMS = remote.INVOICE_ITEMS as unknown as InvoiceLineItem[];
-    }
-    if (Array.isArray(remote.PAYMENTS)) {
-      db.PAYMENTS = remote.PAYMENTS.map((p) => ({
-        id: String(p.id || ''),
-        receipt_number: String(p.receipt_number ?? p.payment_number ?? ''),
-        invoice_id: String(p.invoice_id || ''),
-        payment_date: String(p.payment_date || ''),
-        amount: Math.round(Number(p.amount) || 0),
-        payment_method:
-          (p.payment_method as Payment['payment_method']) || 'Transfer Bank',
-        reference_number: String(p.reference_number || ''),
-        notes: String(p.notes || ''),
-        created_at: String(p.created_at || new Date().toISOString()),
-      }));
-    }
-    saveLocalDb(db);
-    cfg.lastSync = new Date().toISOString();
-    saveLocalGasConfig(cfg);
-    return { ok: true, last_sync: cfg.lastSync };
+    const pullRes = await pullFromGasDirectToLocalDb(currentUser);
+    return {
+      ok: pullRes.ok,
+      last_sync: pullRes.lastSync,
+    };
   }
 
   return { ok: true };

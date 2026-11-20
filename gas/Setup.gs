@@ -132,30 +132,49 @@ function setupAutosmartDatabase() {
     } catch (e) {}
   }
 
+  var nowIso = new Date().toISOString();
+
+  var usersSheet = ss.getSheetByName('USERS');
+  if (usersSheet && usersSheet.getLastRow() <= 1) {
+    var defaultUsers = [
+      ['USR-0001', 'Administrator Autosmart', 'admin@autosmart.id', 'scrypt_hash_protected', 'Administrator', 'Aktif', nowIso],
+      ['USR-0002', 'Staf Administrasi & Billing', 'staff@autosmart.id', 'scrypt_hash_protected', 'Staff', 'Aktif', nowIso]
+    ];
+    usersSheet.getRange(2, 1, defaultUsers.length, 7).setValues(defaultUsers);
+  }
+
   var settingsSheet = ss.getSheetByName('COMPANY_SETTINGS');
   if (settingsSheet && settingsSheet.getLastRow() <= 1) {
-    var nowIso = new Date().toISOString();
     var defaultSettings = [
-      ['SET-01', 'company_name', 'Autosmart Digital Solutions', nowIso],
-      ['SET-02', 'tagline', 'Skill Up For Digital Collaboration', nowIso],
-      ['SET-03', 'business_field', 'Digital Learning & Business Solution', nowIso],
-      ['SET-04', 'address', 'Jl. Brigjen Slamet Riadi VIII/56 Kec. Klojen Kel. Oro-Oro Dowo Kota Malang, Jawa Timur 65112, Indonesia.', nowIso],
-      ['SET-05', 'whatsapp', '085726686267', nowIso],
-      ['SET-06', 'email', 'autosmart2025@gmail.com', nowIso],
-      ['SET-07', 'website', 'https://autosmart-abuhafsh.github.io/Autosmart/', nowIso],
-      ['SET-08', 'logo_url', '/assets/autosmart-logo.png', nowIso],
-      ['SET-09', 'bank_name', 'BCA', nowIso],
-      ['SET-10', 'bank_account_name', 'Muhammad', nowIso],
-      ['SET-11', 'bank_account_number', '0113593935', nowIso],
-      ['SET-12', 'invoice_prefix', 'INV/ASM', nowIso],
-      ['SET-13', 'receipt_prefix', 'KW/ASM', nowIso],
-      ['SET-14', 'document_year', '2026', nowIso],
-      ['SET-15', 'currency', 'IDR', nowIso],
-      ['SET-16', 'tax_enabled', 'false', nowIso],
-      ['SET-17', 'tax_rate', '11', nowIso]
+      ['SET-001', 'company_name', 'Autosmart Digital Solutions', nowIso],
+      ['SET-002', 'tagline', 'Skill Up For Digital Collaboration', nowIso],
+      ['SET-003', 'business_field', 'Digital Learning & Business Solution', nowIso],
+      ['SET-004', 'address', 'Jl. Brigjen Slamet Riadi VIII/56 Kec. Klojen Kel. Oro-Oro Dowo Kota Malang, Jawa Timur 65112, Indonesia.', nowIso],
+      ['SET-005', 'whatsapp', '085726686267', nowIso],
+      ['SET-006', 'email', 'autosmart2025@gmail.com', nowIso],
+      ['SET-007', 'website', 'https://autosmart-abuhafsh.github.io/Autosmart/', nowIso],
+      ['SET-008', 'logo_url', '/assets/autosmart-logo.png', nowIso],
+      ['SET-009', 'bank_name', 'BCA', nowIso],
+      ['SET-010', 'bank_account_name', 'Muhammad', nowIso],
+      ['SET-011', 'bank_account_number', '0113593935', nowIso],
+      ['SET-012', 'invoice_prefix', 'INV/ASM', nowIso],
+      ['SET-013', 'receipt_prefix', 'KW/ASM', nowIso],
+      ['SET-014', 'document_year', '2026', nowIso],
+      ['SET-015', 'currency', 'IDR', nowIso],
+      ['SET-016', 'tax_enabled', 'false', nowIso],
+      ['SET-017', 'tax_rate', '11', nowIso]
     ];
     settingsSheet.getRange(2, 1, defaultSettings.length, 4).setValues(defaultSettings);
   }
+
+  var logsSheet = ss.getSheetByName('ACTIVITY_LOGS');
+  if (logsSheet && logsSheet.getLastRow() <= 1) {
+    logsSheet.getRange(2, 1, 1, 5).setValues([
+      ['LOG-0001', 'USR-0001', 'SETUP_DATABASE', 'Inisialisasi 8 Sheet Database Autosmart Invoice berhasil dijalankan', nowIso]
+    ]);
+  }
+
+  SpreadsheetApp.flush();
 
   return {
     spreadsheetId: ss.getId(),
@@ -166,6 +185,14 @@ function setupAutosmartDatabase() {
 }
 
 function getOrCreateSpreadsheet_() {
+  try {
+    var active = SpreadsheetApp.getActiveSpreadsheet();
+    if (active) {
+      PropertiesService.getScriptProperties().setProperty('SPREADSHEET_ID', active.getId());
+      return active;
+    }
+  } catch (e) {}
+
   var props = PropertiesService.getScriptProperties();
   var savedId = props.getProperty('SPREADSHEET_ID');
 
@@ -174,14 +201,6 @@ function getOrCreateSpreadsheet_() {
       return SpreadsheetApp.openById(savedId);
     } catch (e) {}
   }
-
-  try {
-    var active = SpreadsheetApp.getActiveSpreadsheet();
-    if (active) {
-      props.setProperty('SPREADSHEET_ID', active.getId());
-      return active;
-    }
-  } catch (e) {}
 
   var created = SpreadsheetApp.create(SPREADSHEET_NAME);
   props.setProperty('SPREADSHEET_ID', created.getId());

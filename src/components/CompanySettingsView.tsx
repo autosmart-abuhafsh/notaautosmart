@@ -25,6 +25,10 @@ import type {
 } from '../types/invoice';
 import { formatDateId } from '../utils/invoiceLogic';
 import { SETUP_GS_CODE, CODE_GS_CODE } from '../utils/gasTemplates';
+import {
+  loadLocalDb,
+  loadLocalGasConfig,
+} from '../utils/clientFallbackEngine';
 import { DEFAULT_COMPANY_LOGO_URL } from './BrandLogo';
 
 interface CompanySettingsViewProps {
@@ -175,9 +179,11 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
   const [savingUser, setSavingUser] = useState(false);
   const [userError, setUserError] = useState('');
 
-  // Database Config State
-  const [gasUrl, setGasUrl] = useState('');
-  const [gasSecret, setGasSecret] = useState('');
+  // Database Config State (pre-filled from saved browser or VITE_GAS_WEB_APP_URL config)
+  const [gasUrl, setGasUrl] = useState(() => loadLocalGasConfig().webAppUrl);
+  const [gasSecret, setGasSecret] = useState(
+    () => loadLocalGasConfig().apiSecret
+  );
   const [savingGas, setSavingGas] = useState(false);
   const [syncingGas, setSyncingGas] = useState(false);
   const [pullingGas, setPullingGas] = useState(false);
@@ -196,6 +202,13 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
   const [copiedScript, setCopiedScript] = useState<'setup' | 'code' | null>(
     null
   );
+
+  useEffect(() => {
+    const cfg = loadLocalGasConfig();
+    if (cfg.webAppUrl && !gasUrl) {
+      setGasUrl(cfg.webAppUrl);
+    }
+  }, [databaseStatus.gas_url_configured, gasUrl]);
 
   const setField = (key: keyof CompanySettingsMap, val: string) => {
     setFormState((prev) => ({ ...prev, [key]: val }));
@@ -262,12 +275,31 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
   };
 
   const handleDownloadBackup = async () => {
-    const token = localStorage.getItem('autosmart_token') || '';
-    const res = await fetch('/api/database/backup', {
-      headers: { Authorization: `Bearer ${token}` },
+    try {
+      const token = localStorage.getItem('autosmart_token') || '';
+      const res = await fetch('/api/database/backup', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `AUTOSMART_INVOICE_DATABASE_BACKUP_${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        return;
+      }
+    } catch {
+      // Fallback to localStorage DB on GitHub Pages / offline mode
+    }
+    const localData = loadLocalDb();
+    const blob = new Blob([JSON.stringify(localData, null, 2)], {
+      type: 'application/json',
     });
-    if (!res.ok) return;
-    const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -343,12 +375,12 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
                     className={`px-2.5 py-0.5 rounded text-[11px] font-semibold ${
                       databaseStatus.connected
                         ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                        : 'bg-slate-100 text-slate-700 border border-slate-200'
+                        : 'bg-amber-50 text-amber-800 border border-amber-200'
                     }`}
                   >
                     {databaseStatus.connected
-                      ? 'GOOGLE SHEETS TERHUBUNG'
-                      : 'PENYIMPANAN PERSISTEN AKTIF'}
+                      ? 'GOOGLE SHEETS TERHUBUNG & SINKRON OTOMATIS'
+                      : 'BELUM TERHUBUNG KE GOOGLE SHEETS (MODE LOKAL)'}
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 mt-1">
@@ -374,6 +406,11 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
                       setTestResult(null);
                       try {
                         await onTriggerDatabaseSync();
+                        setTestResult({
+                          ok: true,
+                          message:
+                            'Seluruh data pelanggan, layanan, invoice, kwitansi, pengaturan & log aktivitas berhasil disimpan (Push) ke 8 Sheet Google Sheets!',
+                        });
                       } catch (err) {
                         setTestResult({
                           ok: false,
@@ -407,6 +444,11 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
                         setTestResult(null);
                         try {
                           await onPullDatabaseFromGas();
+                          setTestResult({
+                            ok: true,
+                            message:
+                              'Data terbaru dari 8 Sheet Google Sheets berhasil ditarik (Pull) ke aplikasi!',
+                          });
                         } catch (err) {
                           setTestResult({
                             ok: false,
@@ -473,15 +515,34 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
                     setSavingGas(true);
                     setTestResult(null);
                     try {
-                      await onSaveDatabaseConfig(gasUrl.trim(), gasSecret.trim());
+                      await onSaveDatabaseConfig(
+                        gasUrl.trim(),
+                        gasSecret.trim()
+                      );
+                      let verifyInfo: {
+                        spreadsheetName?: string;
+                        spreadsheetUrl?: string;
+                        counts?: Record<string, number>;
+                      } = {};
+                      if (gasUrl.trim() && onTestDatabaseConnection) {
+                        try {
+                          verifyInfo = await onTestDatabaseConnection(
+                            gasUrl.trim(),
+                            gasSecret.trim()
+                          );
+                        } catch {
+                          // ignore secondary verify
+                        }
+                      }
                       setTestResult({
                         ok: true,
                         message: gasUrl.trim()
-                          ? 'Konfigurasi Google Apps Script berhasil disimpan & disinkronkan!'
+                          ? 'Terhubung! Seluruh data aplikasi (termasuk Pelanggan, Layanan, Invoice, Kwitansi & Activity Log) berhasil disimpan otomatis ke Google Sheets!'
                           : 'Koneksi Google Apps Script dinonaktifkan (kembali ke penyimpanan lokal/server).',
+                        spreadsheetName: verifyInfo.spreadsheetName,
+                        spreadsheetUrl: verifyInfo.spreadsheetUrl,
+                        counts: verifyInfo.counts,
                       });
-                      setGasUrl('');
-                      setGasSecret('');
                     } catch (err) {
                       setTestResult({
                         ok: false,
@@ -536,23 +597,38 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
                     {onTestDatabaseConnection && (
                       <button
                         type="button"
-                        disabled={testingGas}
+                        disabled={testingGas || savingGas}
                         onClick={async () => {
                           setTestingGas(true);
                           setTestResult(null);
                           try {
                             const res = await onTestDatabaseConnection(
-                              gasUrl,
-                              gasSecret
+                              gasUrl.trim(),
+                              gasSecret.trim()
                             );
+                            // Automatically save and push all local data on successful test!
+                            if (gasUrl.trim()) {
+                              await onSaveDatabaseConfig(
+                                gasUrl.trim(),
+                                gasSecret.trim()
+                              );
+                            }
+                            const refreshed = await onTestDatabaseConnection(
+                              gasUrl.trim(),
+                              gasSecret.trim()
+                            ).catch(() => res);
                             setTestResult({
                               ok: true,
                               message:
-                                'Koneksi ke Google Apps Script berhasil diverifikasi!',
-                              spreadsheetName: res.spreadsheetName,
-                              spreadsheetUrl: res.spreadsheetUrl,
-                              counts: res.counts,
-                              serverTime: res.serverTime,
+                                'Koneksi berhasil diverifikasi & seluruh data aplikasi telah disinkronkan ke Google Sheets!',
+                              spreadsheetName:
+                                refreshed.spreadsheetName ||
+                                res.spreadsheetName,
+                              spreadsheetUrl:
+                                refreshed.spreadsheetUrl || res.spreadsheetUrl,
+                              counts: refreshed.counts || res.counts,
+                              serverTime:
+                                refreshed.serverTime || res.serverTime,
                             });
                           } catch (err) {
                             setTestResult({
@@ -570,14 +646,14 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
                       >
                         <Wifi className="w-3.5 h-3.5 text-[#800020]" />
                         <span>
-                          {testingGas ? 'Menguji...' : '1. Test Koneksi'}
+                          {testingGas ? 'Menguji & Sinkron...' : '1. Test Koneksi'}
                         </span>
                       </button>
                     )}
 
                     <button
                       type="submit"
-                      disabled={savingGas}
+                      disabled={savingGas || testingGas}
                       className="flex-1 py-2.5 px-4 bg-[#800020] hover:bg-[#670019] text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer"
                     >
                       {savingGas
@@ -605,19 +681,23 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
                     </div>
                     {testResult.ok && (
                       <div className="mt-2 pl-6 space-y-1 text-[11px] text-emerald-800">
-                        <div>
-                          Nama File:{' '}
-                          <span className="font-mono font-bold">
-                            {testResult.spreadsheetName}
-                          </span>
-                        </div>
+                        {testResult.spreadsheetName && (
+                          <div>
+                            Nama File:{' '}
+                            <span className="font-mono font-bold">
+                              {testResult.spreadsheetName}
+                            </span>
+                          </div>
+                        )}
                         {testResult.counts && (
                           <div>
-                            Data Tersimpan:{' '}
+                            Data Tersimpan di Sheets:{' '}
                             <span className="font-semibold">
+                              {testResult.counts.CLIENTS ?? 0} Pelanggan ·{' '}
+                              {testResult.counts.SERVICES ?? 0} Layanan ·{' '}
                               {testResult.counts.INVOICES ?? 0} Invoice ·{' '}
                               {testResult.counts.PAYMENTS ?? 0} Kwitansi ·{' '}
-                              {testResult.counts.CLIENTS ?? 0} Pelanggan
+                              {testResult.counts.ACTIVITY_LOGS ?? 0} Log
                             </span>
                           </div>
                         )}
@@ -641,13 +721,16 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
               <div className="mt-5 pt-4 border-t border-slate-200 text-[11px] text-slate-600 space-y-1.5">
                 <div className="font-bold text-[#101B35] flex items-center gap-1.5">
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  <span>Otomatis Menyimpan Setiap Transaksi</span>
+                  <span>Sinkronisasi Otomatis Langsung ke 8 Sheet & Log</span>
                 </div>
                 <p>
-                  Begitu URL Web App terhubung, setiap kali Anda menerbitkan
-                  nota/invoice baru, mencatat pembayaran kwitansi, memperbarui
-                  pengaturan/logo, atau menambah pelanggan, aplikasi otomatis
-                  mengirim pembaruan ke Google Sheets Anda.
+                  Setiap penambahan/perubahan Pelanggan, Katalog Layanan,
+                  Invoice, Kwitansi, Pengaturan, maupun Akun Pengguna langsung
+                  dikirim otomatis ke Google Sheets Anda beserta baris baru di{' '}
+                  <code className="font-mono text-[#800020]">
+                    ACTIVITY_LOGS
+                  </code>
+                  .
                 </p>
               </div>
             </div>
@@ -657,7 +740,7 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
               <div>
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-[#C5A15B]">
-                    Panduan Cepat Integrasi Google Sheets (5 Menit)
+                    Panduan Integrasi Google Sheets & Apps Script (Anti-Gagal)
                   </span>
                   <a
                     href="https://sheets.new"
@@ -672,64 +755,175 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
 
                 <ol className="space-y-2.5 text-xs text-slate-200 list-decimal list-inside leading-relaxed">
                   <li>
-                    Buka Google Sheets baru (atau klik tombol{' '}
-                    <strong>Buka Google Sheets Baru</strong> di atas), beri nama{' '}
-                    <span className="font-mono text-[#C5A15B] break-all">
+                    Buka Google Sheets Anda (boleh bernama bebas seperti{' '}
+                    <span className="font-mono text-[#C5A15B]">
+                      Nota Invoiche Autosmart 2028 - 2027
+                    </span>{' '}
+                    atau{' '}
+                    <span className="font-mono text-[#C5A15B]">
                       AUTOSMART_INVOICE_DATABASE
                     </span>
-                    .
+                    ).
                   </li>
                   <li>
                     Klik menu <strong>Extensions (Ekstensi)</strong> &rarr;{' '}
                     <strong>Apps Script</strong> di bagian atas Google Sheets.
                   </li>
                   <li>
-                    Buat 2 file terpisah di Apps Script agar rapi:
+                    Salin dan pasang kode terbaru dari kotak di bawah:
                     <ul className="pl-5 mt-1 space-y-1 list-disc text-slate-300">
                       <li>
-                        File 1:{' '}
                         <strong className="text-white font-mono">
                           Setup.gs
                         </strong>{' '}
-                        — Salin dari tab <em>File 1: Setup.gs</em> di bawah,
-                        simpan, lalu klik tombol{' '}
+                        — Salin dari tab <em>File 1: Setup.gs</em>, simpan (
+                        <code>Ctrl+S</code>), lalu pilih fungsi{' '}
+                        <code>setupAutosmartDatabase</code> dan klik{' '}
                         <strong className="text-[#C5A15B]">
                           Run (Jalankan)
-                        </strong>{' '}
-                        pada fungsi <code>setupAutosmartDatabase</code> untuk
-                        membuat 8 Sheet tabel otomatis.
+                        </strong>
+                        .
                       </li>
                       <li>
-                        File 2:{' '}
                         <strong className="text-white font-mono">
                           Code.gs
                         </strong>{' '}
-                        — Salin dari tab <em>File 2: Code.gs</em> di bawah untuk
-                        menerima penyimpanan nota, invoice, pembayaran, dan
-                        pengaturan dari aplikasi.
+                        — Salin dari tab <em>File 2: Code.gs</em> dan simpan (
+                        <code>Ctrl+S</code>). Kode ini sudah mandiri (otomatis
+                        mengenali Spreadsheet aktif Anda dan langsung melakukan{' '}
+                        <code>SpreadsheetApp.flush()</code>).
                       </li>
                     </ul>
                   </li>
                   <li>
-                    Di kanan atas editor Apps Script, klik tombol biru{' '}
-                    <strong>Deploy (Terapkan)</strong> &rarr;{' '}
-                    <strong>New deployment (Deployment baru)</strong>.
+                    <strong className="text-[#C5A15B]">
+                      PENTING Saat Deploy / Update Kode:
+                    </strong>{' '}
+                    Klik tombol biru <strong>Deploy</strong> &rarr;{' '}
+                    <strong>New deployment</strong> (atau jika sudah pernah
+                    deploy: klik <strong>Manage deployments</strong> &rarr; ikon
+                    Pensil <em>Edit</em> &rarr; pada <em>Version</em> pilih{' '}
+                    <strong className="text-[#C5A15B]">New version</strong>).
                   </li>
                   <li>
-                    Pilih jenis <strong>Web app</strong>, atur{' '}
-                    <em>Execute as</em> ke <strong>Me (Saya)</strong>, dan{' '}
-                    <em>Who has access</em> ke{' '}
+                    Pastikan <em>Execute as</em> ={' '}
+                    <strong>Me (Email Anda)</strong> dan{' '}
+                    <em>Who has access</em> ={' '}
                     <strong className="text-[#C5A15B]">
                       Anyone (Siapa saja)
-                    </strong>
-                    , lalu klik <strong>Deploy</strong>.
+                    </strong>{' '}
+                    (Jangan pilih <em>Only myself</em> atau{' '}
+                    <em>Anyone with Google Account</em> karena akan memblokir
+                    pengiriman data otomatis dari aplikasi).
                   </li>
                   <li>
-                    Salin <strong>Web app URL</strong> yang muncul, lalu tempel
-                    pada formulir di sebelah kiri dan klik{' '}
-                    <strong>Simpan & Hubungkan</strong>.
+                    Salin <strong>Web app URL</strong> (wajib berakhiran{' '}
+                    <code>/exec</code>), tempel di kolom sebelah kiri, lalu klik{' '}
+                    <strong>2. Simpan & Hubungkan</strong>. Seluruh data yang
+                    sudah Anda ketik di aplikasi (seperti{' '}
+                    <em>Es Dawet Palembang</em>) akan langsung terkirim ke
+                    Google Sheets!
                   </li>
                 </ol>
+              </div>
+            </div>
+          </div>
+
+          {/* Tutorial Card: Environment GitHub Pages (github.io) & Vercel (vercel.app) */}
+          <div className="mt-6 bg-amber-50/70 rounded-xl border border-amber-200 p-4 sm:p-5">
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-lg bg-[#800020] text-white shrink-0 mt-0.5">
+                <Wifi className="w-4 h-4" />
+              </div>
+              <div className="space-y-3 text-xs text-slate-700 leading-relaxed min-w-0 flex-1">
+                <div>
+                  <h3 className="text-sm font-bold text-[#101B35]">
+                    Panduan Khusus Deployment GitHub Pages (github.io) & Vercel
+                    (vercel.app)
+                  </h3>
+                  <p className="text-slate-600 mt-0.5">
+                    Mengapa sebelumnya di aplikasi lancar tetapi tidak masuk ke
+                    Google Sheets saat di-share via{' '}
+                    <code className="font-mono font-semibold text-[#800020]">
+                      vercel.app
+                    </code>{' '}
+                    atau{' '}
+                    <code className="font-mono font-semibold text-[#800020]">
+                      github.io
+                    </code>
+                    ? Berikut penjelasan dan solusinya:
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="bg-white p-3.5 rounded-lg border border-amber-200/80 space-y-1.5">
+                    <div className="font-bold text-[#101B35]">
+                      1. Penyebab di Vercel (vercel.app) & GitHub (github.io)
+                    </div>
+                    <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
+                      <li>
+                        <strong>GitHub Pages (github.io)</strong> adalah hosting
+                        statis (tanpa server Node.js), sehingga aplikasi
+                        mengirim data langsung dari browser ke Google Apps
+                        Script.
+                      </li>
+                      <li>
+                        <strong>Vercel (vercel.app)</strong> menjalankan fungsi{' '}
+                        <em>Serverless</em> yang bersifat sementara (folder{' '}
+                        <code>/tmp</code> akan ter-reset setiap beberapa menit
+                        ketika container tidur/cold-start).
+                      </li>
+                      <li>
+                        <strong>Solusi yang Sudah Diterapkan di Kode:</strong>{' '}
+                        Aplikasi ini sekarang dilengkapi{' '}
+                        <strong>Direct Dual-Sync Engine</strong> — setiap kali
+                        Anda atau Pemilik menambah Pelanggan, Layanan, Invoice,
+                        atau Kwitansi, browser otomatis menyertakan header URL
+                        Apps Script sekaligus mengirim langsung ke Google Sheets
+                        dan mencatat ke <code>ACTIVITY_LOGS</code>.
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div className="bg-white p-3.5 rounded-lg border border-amber-200/80 space-y-1.5">
+                    <div className="font-bold text-[#101B35]">
+                      2. Agar Link Vercel Otomatis Terhubung di HP/Laptop
+                      Pemilik (Tanpa Input Ulang URL)
+                    </div>
+                    <p className="text-[11px] text-slate-600">
+                      Jika Anda hanya menempelkan URL Web App di form atas, URL
+                      tersebut tersimpan di browser perangkat Anda. Agar saat
+                      link <code>vercel.app</code> dibuka oleh{' '}
+                      <strong>Pemilik</strong> di HP/laptop lain langsung
+                      terhubung permanen ke Google Sheets:
+                    </p>
+                    <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-700 font-medium">
+                      <li>
+                        Buka Dashboard <strong>Vercel</strong> proyek Anda
+                        &rarr; klik <strong>Settings</strong> &rarr;{' '}
+                        <strong>Environment Variables</strong>.
+                      </li>
+                      <li>
+                        Tambahkan variabel ke-1: Key ={' '}
+                        <code className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[#800020] select-all">
+                          VITE_GAS_WEB_APP_URL
+                        </code>{' '}
+                        dan Value = URL Web App <code>/exec</code> Anda.
+                      </li>
+                      <li>
+                        Tambahkan variabel ke-2: Key ={' '}
+                        <code className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[#800020] select-all">
+                          GAS_WEB_APP_URL
+                        </code>{' '}
+                        dan Value = URL Web App <code>/exec</code> Anda.
+                      </li>
+                      <li>
+                        Klik <strong>Save</strong> lalu klik{' '}
+                        <strong>Redeploy</strong> di tab Deployments Vercel.
+                      </li>
+                    </ol>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -741,11 +935,13 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
                 <FileCode2 className="w-4 h-4 text-[#800020] shrink-0" />
                 <div>
                   <h3 className="text-xs sm:text-sm font-bold text-[#101B35]">
-                    Kode Google Apps Script Siap Pakai (Setup.gs & Code.gs)
+                    Kode Google Apps Script Siap Pakai — Versi Terbaru (Setup.gs
+                    & Code.gs)
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    Pilih masing-masing file di bawah ini lalu klik tombol Salin
-                    Kode untuk dipasang di Google Apps Script Anda.
+                    Pastikan Anda menyalin ulang Code.gs terbaru di bawah ini ke
+                    Apps Script Anda lalu Deploy &rarr; Manage deployments &rarr;
+                    Edit &rarr; New version.
                   </p>
                 </div>
               </div>
@@ -780,8 +976,8 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 mb-3 border-b border-white/10">
                 <div className="text-xs font-mono text-[#C5A15B]">
                   {activeGasFileTab === 'setup'
-                    ? 'Setup.gs — Membuat 8 Sheet Tabel & Header Otomatis (Jalankan fungsi setupAutosmartDatabase)'
-                    : 'Code.gs — Server API Web App (doGet & doPost) Penyimpanan Nota, Invoice, Kwitansi & Pengaturan'}
+                    ? 'Setup.gs — Membuat 8 Sheet Tabel & Header Otomatis pada Spreadsheet Aktif (Jalankan setupAutosmartDatabase)'
+                    : 'Code.gs — Server API Web App (doGet & doPost) Mandiri + Auto-Flush Penyimpanan Semua 8 Sheet & Activity Log'}
                 </div>
                 <button
                   type="button"
@@ -820,7 +1016,7 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
           {/* 8 Sheets Relational Schema Overview */}
           <div className="mt-6">
             <h3 className="text-sm font-bold text-[#101B35] mb-3">
-              Struktur 8 Sheet Database Standar (AUTOSMART_INVOICE_DATABASE)
+              Struktur 8 Sheet Database Standar (Tersinkronisasi Otomatis)
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               {sheets.map((s, idx) => (
@@ -833,7 +1029,7 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
                       {idx + 1}. {s.name}
                     </span>
                     <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
-                      Aktif
+                      Auto-Sync
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-600 leading-relaxed">

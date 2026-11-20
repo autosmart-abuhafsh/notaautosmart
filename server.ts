@@ -665,6 +665,150 @@ function saveSessions(sessions: Record<string, SessionRecord>): void {
 }
 
 // --- Sync Helper with Google Apps Script Web App ---
+let hasHydratedColdStartFromGas = false;
+
+async function hydrateFromGasOnColdStartIfNeeded(): Promise<void> {
+  if (hasHydratedColdStartFromGas) return;
+  const cfg = loadGasConfig();
+  if (!cfg.webAppUrl) return;
+
+  const currentDb = readDb();
+  // Only auto-hydrate on cold start if local/tmp DB has no clients and no invoices
+  if (currentDb.CLIENTS.length > 0 || currentDb.INVOICES.length > 0) {
+    hasHydratedColdStartFromGas = true;
+    return;
+  }
+
+  hasHydratedColdStartFromGas = true;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    const gasRes = await fetch(cfg.webAppUrl, {
+      method: 'POST',
+      redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'exportAll',
+        secret: cfg.apiSecret,
+        apiSecret: cfg.apiSecret,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!gasRes.ok) return;
+    const rawText = await gasRes.text();
+    if (rawText.trim().startsWith('<')) return;
+    const payload = JSON.parse(rawText) as {
+      ok?: boolean;
+      data?: Partial<Record<keyof AutosmartDatabase, Array<Record<string, unknown>>>>;
+    };
+    if (!payload?.ok || !payload.data) return;
+
+    const remote = payload.data;
+    let changed = false;
+
+    if (Array.isArray(remote.CLIENTS) && remote.CLIENTS.length > 0) {
+      currentDb.CLIENTS = remote.CLIENTS.map((c) => ({
+        id: String(c.id || ''),
+        client_name: String(c.client_name || ''),
+        contact_person: String(c.contact_person || ''),
+        phone: String(c.phone || ''),
+        whatsapp: String(c.whatsapp || c.phone || ''),
+        email: String(c.email || ''),
+        address: String(c.address || ''),
+        notes: String(c.notes || ''),
+        created_at: String(c.created_at || getJakartaTimestamp()),
+      }));
+      changed = true;
+    }
+
+    if (Array.isArray(remote.SERVICES) && remote.SERVICES.length > 0) {
+      currentDb.SERVICES = remote.SERVICES.map((s) => ({
+        id: String(s.id || ''),
+        service_name: String(s.service_name || ''),
+        category: String(s.category || 'Layanan Digital Lainnya'),
+        description: String(s.description || ''),
+        unit: String(s.unit || 'Paket'),
+        price: Math.round(Number(s.price) || 0),
+        status: s.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
+        created_at: String(s.created_at || getJakartaTimestamp()),
+      }));
+      changed = true;
+    }
+
+    if (Array.isArray(remote.INVOICES) && remote.INVOICES.length > 0) {
+      currentDb.INVOICES = remote.INVOICES.map((inv) => ({
+        id: String(inv.id || ''),
+        invoice_number: String(inv.invoice_number || ''),
+        client_id: String(inv.client_id || ''),
+        issue_date: String(inv.issue_date || getJakartaDateStr()),
+        due_date: String(inv.due_date || getJakartaDateStr()),
+        subtotal: Math.round(Number(inv.subtotal) || 0),
+        discount: Math.round(Number(inv.discount) || 0),
+        additional_cost: Math.round(Number(inv.additional_cost) || 0),
+        tax_rate: Number(inv.tax_rate) || 0,
+        tax_amount: Math.round(Number(inv.tax_amount) || 0),
+        grand_total: Math.round(Number(inv.grand_total) || 0),
+        amount_paid: Math.round(Number(inv.amount_paid) || 0),
+        balance: Math.round(Number(inv.balance) || 0),
+        status: (inv.status as DbInvoice['status']) || 'Unpaid',
+        notes: String(inv.notes || ''),
+        created_at: String(inv.created_at || getJakartaTimestamp()),
+        updated_at: String(inv.updated_at || getJakartaTimestamp()),
+      }));
+      changed = true;
+    }
+
+    if (Array.isArray(remote.INVOICE_ITEMS) && remote.INVOICE_ITEMS.length > 0) {
+      currentDb.INVOICE_ITEMS = remote.INVOICE_ITEMS.map((it) => ({
+        id: String(it.id || ''),
+        invoice_id: String(it.invoice_id || ''),
+        service_id: String(it.service_id || ''),
+        description: String(it.description || ''),
+        quantity: Number(it.quantity) || 1,
+        unit: String(it.unit || 'Paket'),
+        unit_price: Math.round(Number(it.unit_price) || 0),
+        discount: Math.round(Number(it.discount) || 0),
+        total: Math.round(Number(it.total) || 0),
+      }));
+      changed = true;
+    }
+
+    if (Array.isArray(remote.PAYMENTS) && remote.PAYMENTS.length > 0) {
+      currentDb.PAYMENTS = remote.PAYMENTS.map((p) => ({
+        id: String(p.id || ''),
+        receipt_number: String(p.receipt_number || ''),
+        invoice_id: String(p.invoice_id || ''),
+        payment_date: String(p.payment_date || getJakartaDateStr()),
+        amount: Math.round(Number(p.amount) || 0),
+        payment_method:
+          (p.payment_method as DbPayment['payment_method']) || 'Transfer Bank',
+        reference_number: String(p.reference_number || ''),
+        notes: String(p.notes || ''),
+        created_at: String(p.created_at || getJakartaTimestamp()),
+      }));
+      changed = true;
+    }
+
+    if (Array.isArray(remote.ACTIVITY_LOGS) && remote.ACTIVITY_LOGS.length > 0) {
+      currentDb.ACTIVITY_LOGS = remote.ACTIVITY_LOGS.map((l, idx) => ({
+        id: String(l.id || `LOG-R-${idx + 1}`),
+        user_id: String(l.user_id || 'USR-0001'),
+        activity: String(l.activity || 'ACTIVITY'),
+        description: String(l.description || ''),
+        timestamp: String(l.timestamp || getJakartaTimestamp()),
+      }));
+      changed = true;
+    }
+
+    if (changed) {
+      writeDb(currentDb);
+    }
+  } catch {
+    // ignore cold-start hydration network errors
+  }
+}
+
 async function syncWithGasIfConfigured(db: AutosmartDatabase): Promise<{
   synced: boolean;
   error?: string;
@@ -674,13 +818,15 @@ async function syncWithGasIfConfigured(db: AutosmartDatabase): Promise<{
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const res = await fetch(cfg.webAppUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({
         action: 'syncAll',
         secret: cfg.apiSecret,
+        apiSecret: cfg.apiSecret,
         payload: db,
       }),
       signal: controller.signal,
@@ -689,7 +835,15 @@ async function syncWithGasIfConfigured(db: AutosmartDatabase): Promise<{
     if (!res.ok) {
       return { synced: false, error: `HTTP ${res.status}` };
     }
-    const data = (await res.json()) as { ok?: boolean; error?: string };
+    const rawText = await res.text();
+    if (rawText.trim().startsWith('<')) {
+      return {
+        synced: false,
+        error:
+          'Google Apps Script mengembalikan halaman Login HTML (bukan JSON). Pastikan saat Deploy Web App: Who has access = Anyone / Siapa saja, dan gunakan URL berakhiran /exec.',
+      };
+    }
+    const data = JSON.parse(rawText) as { ok?: boolean; error?: string };
     if (data && data.ok) {
       cfg.lastSync = getJakartaTimestamp();
       saveGasConfig(cfg);
@@ -704,6 +858,28 @@ async function syncWithGasIfConfigured(db: AutosmartDatabase): Promise<{
 // --- Express App Setup (Exported for both standalone server and Vercel Serverless) ---
 export const app = express();
 app.use(express.json({ limit: '10mb' }));
+
+// Recover GAS config from client headers on stateless Vercel Serverless instances
+app.use((req, _res, next) => {
+  const headerGasUrl = String(req.headers['x-gas-web-app-url'] || '').trim();
+  const headerGasSecret = req.headers['x-gas-api-secret'];
+  if (
+    headerGasUrl &&
+    headerGasUrl.startsWith('https://script.google.com/') &&
+    !headerGasUrl.includes('/home/projects/') &&
+    !headerGasUrl.endsWith('/edit')
+  ) {
+    const cfg = loadGasConfig();
+    if (!cfg.webAppUrl || cfg.webAppUrl !== headerGasUrl) {
+      cfg.webAppUrl = headerGasUrl;
+      if (typeof headerGasSecret === 'string') {
+        cfg.apiSecret = headerGasSecret.trim();
+      }
+      saveGasConfig(cfg);
+    }
+  }
+  next();
+});
 
 // Auth Helper
 function getAuthenticatedUser(req: express.Request): DbUser | null {
@@ -846,7 +1022,8 @@ app.post('/api/auth/login', async (req, res) => {
   });
 
   // --- BOOTSTRAP / FULL STATE ENDPOINT ---
-  app.get('/api/bootstrap', requireAuth, (req, res) => {
+  app.get('/api/bootstrap', requireAuth, async (req, res) => {
+    await hydrateFromGasOnColdStartIfNeeded();
     const db = readDb();
     const cfg = loadGasConfig();
     const user = (req as express.Request & { user: DbUser }).user;
@@ -891,7 +1068,8 @@ app.post('/api/auth/login', async (req, res) => {
       return;
     }
 
-    const created = await withLock(async () => {
+    const result = await withLock(async () => {
+      await hydrateFromGasOnColdStartIfNeeded();
       const db = readDb();
       const newClient: DbClient = {
         id: generateEntityId(
@@ -915,11 +1093,15 @@ app.post('/api/auth/login', async (req, res) => {
         `Menambahkan pelanggan ${newClient.client_name} (${newClient.id})`
       );
       writeDb(db);
-      await syncWithGasIfConfigured(db);
-      return newClient;
+      const syncRes = await syncWithGasIfConfigured(db);
+      return { client: newClient, syncRes };
     });
 
-    res.status(201).json({ client: created });
+    res.status(201).json({
+      client: result.client,
+      gasSynced: result.syncRes.synced,
+      gasError: result.syncRes.error,
+    });
   });
 
   app.put('/api/clients/:id', requireAuth, async (req, res) => {
@@ -931,7 +1113,8 @@ app.post('/api/auth/login', async (req, res) => {
       return;
     }
 
-    const updated = await withLock(async () => {
+    const result = await withLock(async () => {
+      await hydrateFromGasOnColdStartIfNeeded();
       const db = readDb();
       const idx = db.CLIENTS.findIndex((c) => c.id === id);
       if (idx === -1) return null;
@@ -953,15 +1136,19 @@ app.post('/api/auth/login', async (req, res) => {
         `Memperbarui data pelanggan ${db.CLIENTS[idx].client_name} (${id})`
       );
       writeDb(db);
-      await syncWithGasIfConfigured(db);
-      return db.CLIENTS[idx];
+      const syncRes = await syncWithGasIfConfigured(db);
+      return { client: db.CLIENTS[idx], syncRes };
     });
 
-    if (!updated) {
+    if (!result) {
       res.status(404).json({ error: 'Pelanggan tidak ditemukan.' });
       return;
     }
-    res.json({ client: updated });
+    res.json({
+      client: result.client,
+      gasSynced: result.syncRes.synced,
+      gasError: result.syncRes.error,
+    });
   });
 
   app.delete('/api/clients/:id', requireAuth, async (req, res) => {
@@ -969,6 +1156,7 @@ app.post('/api/auth/login', async (req, res) => {
     const { id } = req.params;
 
     const result = await withLock(async () => {
+      await hydrateFromGasOnColdStartIfNeeded();
       const db = readDb();
       const hasInvoices = db.INVOICES.some((inv) => inv.client_id === id);
       if (hasInvoices) {
@@ -988,15 +1176,19 @@ app.post('/api/auth/login', async (req, res) => {
         `Menghapus pelanggan ${target.client_name} (${id})`
       );
       writeDb(db);
-      await syncWithGasIfConfigured(db);
-      return { ok: true };
+      const syncRes = await syncWithGasIfConfigured(db);
+      return { ok: true, syncRes };
     });
 
     if (!result.ok) {
       res.status(400).json({ error: result.reason });
       return;
     }
-    res.json({ ok: true });
+    res.json({
+      ok: true,
+      gasSynced: result.syncRes?.synced,
+      gasError: result.syncRes?.error,
+    });
   });
 
   // --- SERVICE CATEGORIES & SERVICES CRUD ---
@@ -2152,15 +2344,36 @@ app.post('/api/auth/login', async (req, res) => {
         return;
       }
 
+      if (
+        targetUrl.includes('/home/projects/') ||
+        targetUrl.endsWith('/edit')
+      ) {
+        res.status(400).json({
+          error:
+            'URL yang dimasukkan adalah URL Editor Apps Script (/edit), bukan URL Web App. Klik tombol biru "Deploy -> New deployment -> Web app" lalu salin Web App URL yang berakhiran /exec.',
+        });
+        return;
+      }
+
+      if (targetUrl.endsWith('/dev')) {
+        res.status(400).json({
+          error:
+            'URL berakhiran /dev hanya bisa diakses saat login pemilik. Gunakan URL Deployment produksi yang berakhiran /exec agar aplikasi dapat menyimpan data.',
+        });
+        return;
+      }
+
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 15000);
         const gasRes = await fetch(targetUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          redirect: 'follow',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify({
             action: 'ping',
             secret: targetSecret,
+            apiSecret: targetSecret,
           }),
           signal: controller.signal,
         });
@@ -2173,7 +2386,16 @@ app.post('/api/auth/login', async (req, res) => {
           return;
         }
 
-        const data = (await gasRes.json()) as {
+        const rawText = await gasRes.text();
+        if (rawText.trim().startsWith('<')) {
+          res.status(400).json({
+            error:
+              'Google Apps Script mengembalikan halaman Login Google (bukan JSON). Pastikan saat Deploy Web App di Apps Script: (1) Execute as = "Me", (2) Who has access = "Anyone / Siapa saja", dan (3) gunakan URL berakhiran /exec.',
+          });
+          return;
+        }
+
+        const data = JSON.parse(rawText) as {
           ok?: boolean;
           error?: string;
           spreadsheetName?: string;
@@ -2225,14 +2447,6 @@ app.post('/api/auth/login', async (req, res) => {
         return;
       }
 
-      const syncRes = await syncWithGasIfConfigured(db);
-      if (!syncRes.synced) {
-        res.status(502).json({
-          error: `Gagal menghubungi Google Apps Script: ${syncRes.error}`,
-        });
-        return;
-      }
-
       logActivity(
         db,
         admin.id,
@@ -2240,6 +2454,14 @@ app.post('/api/auth/login', async (req, res) => {
         'Sinkronisasi seluruh 8 sheet ke Google Sheets (AUTOSMART_INVOICE_DATABASE) berhasil'
       );
       writeDb(db);
+
+      const syncRes = await syncWithGasIfConfigured(db);
+      if (!syncRes.synced) {
+        res.status(502).json({
+          error: `Gagal menghubungi Google Apps Script: ${syncRes.error}`,
+        });
+        return;
+      }
 
       res.json({
         ok: true,
@@ -2269,10 +2491,12 @@ app.post('/api/auth/login', async (req, res) => {
         const timeout = setTimeout(() => controller.abort(), 15000);
         const gasRes = await fetch(cfg.webAppUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          redirect: 'follow',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify({
             action: 'exportAll',
             secret: cfg.apiSecret,
+            apiSecret: cfg.apiSecret,
           }),
           signal: controller.signal,
         });
@@ -2285,7 +2509,16 @@ app.post('/api/auth/login', async (req, res) => {
           return;
         }
 
-        const payload = (await gasRes.json()) as {
+        const rawText = await gasRes.text();
+        if (rawText.trim().startsWith('<')) {
+          res.status(400).json({
+            error:
+              'Google Apps Script mengembalikan halaman Login Google (bukan JSON). Pastikan saat Deploy Web App: Who has access = "Anyone / Siapa saja" dan URL berakhiran /exec.',
+          });
+          return;
+        }
+
+        const payload = JSON.parse(rawText) as {
           ok?: boolean;
           error?: string;
           data?: Partial<Record<keyof AutosmartDatabase, Array<Record<string, unknown>>>>;

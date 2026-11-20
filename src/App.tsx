@@ -28,10 +28,14 @@ import type {
   User,
 } from './types/invoice';
 import {
+  appendLocalActivityLog,
   handleClientFallbackApi,
+  loadLocalDb,
   loadLocalGasConfig,
   mirrorBootstrapToLocalDb,
+  saveLocalDb,
   saveLocalGasConfig,
+  syncLocalDbToGasIfConfigured,
 } from './utils/clientFallbackEngine';
 import { parseServiceCategories } from './utils/invoiceLogic';
 
@@ -126,7 +130,7 @@ export default function App() {
       setToast({ message, type });
       setTimeout(() => {
         setToast((prev) => (prev?.message === message ? null : prev));
-      }, 3500);
+      }, 4500);
     },
     []
   );
@@ -135,12 +139,19 @@ export default function App() {
     async (url: string, options: RequestInit = {}) => {
       const activeToken =
         token || localStorage.getItem('autosmart_token') || '';
+      const localGas = loadLocalGasConfig();
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         ...(options.headers as Record<string, string>),
       };
       if (activeToken) {
         headers.Authorization = `Bearer ${activeToken}`;
+      }
+      if (localGas.webAppUrl) {
+        headers['X-Gas-Web-App-Url'] = localGas.webAppUrl;
+        if (localGas.apiSecret) {
+          headers['X-Gas-Api-Secret'] = localGas.apiSecret;
+        }
       }
 
       try {
@@ -156,7 +167,7 @@ export default function App() {
           }
           return data;
         }
-        // Server returned non-JSON (e.g. static deployment): use client fallback engine
+        // Server returned non-JSON (e.g. GitHub Pages static deployment): use client fallback engine
         return await handleClientFallbackApi(url, options, activeToken);
       } catch (err) {
         // Network error or cold-start failure: use client fallback engine
@@ -192,13 +203,20 @@ export default function App() {
         databaseStatus?: DatabaseStatus;
       };
       const mirrored = mirrorBootstrapToLocalDb(boot);
-      setClients(boot.clients || []);
-      setServices(boot.services || []);
-      setInvoices(boot.invoices || []);
-      setPayments(boot.payments || []);
+      const effectiveClients = mirrored.mergedDb.CLIENTS;
+      const effectiveServices = mirrored.mergedDb.SERVICES;
+      const effectiveInvoices = mirrored.mergedDb.INVOICES;
+      const effectivePayments = mirrored.mergedDb.PAYMENTS;
+      const effectiveUsers = mirrored.mergedDb.USERS;
+      const effectiveLogs = mirrored.mergedDb.ACTIVITY_LOGS;
+
+      setClients(effectiveClients);
+      setServices(effectiveServices);
+      setInvoices(effectiveInvoices);
+      setPayments(effectivePayments);
       setSettings({ ...DEFAULT_SETTINGS, ...mirrored.mergedSettings });
-      setUsers(boot.users || []);
-      setActivityLogs(boot.activityLogs || []);
+      setUsers(effectiveUsers);
+      setActivityLogs(effectiveLogs);
 
       const localGasCfg = loadLocalGasConfig();
       if (boot.databaseStatus) {
@@ -220,6 +238,13 @@ export default function App() {
           setDatabaseStatus(boot.databaseStatus);
         }
       }
+
+      // If Vercel serverless cold-started and local browser had richer data, sync local -> GAS immediately
+      if (mirrored.localHadMoreData && localGasCfg.webAppUrl) {
+        syncLocalDbToGasIfConfigured(mirrored.mergedDb).catch(() => {
+          // ignore background sync warning on bootstrap
+        });
+      }
     } catch {
       localStorage.removeItem('autosmart_token');
       setToken(null);
@@ -234,6 +259,68 @@ export default function App() {
       loadBootstrapData();
     }
   }, [token, loadBootstrapData]);
+
+  /**
+   * Ensures every mutation in the application:
+   * 1. Is recorded in ACTIVITY_LOGS (both local and state)
+   * 2. Is pushed to Google Apps Script if a GAS Web App URL is configured and the server didn't already confirm `gasSynced: true`
+   */
+  const ensureGasSyncAfterMutation = useCallback(
+    async (
+      serverRes: { gasSynced?: boolean; gasError?: string } | undefined,
+      activityCode: string,
+      description: string
+    ): Promise<{ gasSynced: boolean; gasError?: string }> => {
+      const localDb = loadLocalDb();
+      const topLog = localDb.ACTIVITY_LOGS[0];
+      let latestLog = topLog;
+      if (
+        !topLog ||
+        topLog.activity !== activityCode ||
+        topLog.description !== description
+      ) {
+        latestLog = appendLocalActivityLog(
+          localDb,
+          currentUser,
+          activityCode,
+          description
+        );
+        saveLocalDb(localDb);
+        setActivityLogs([...localDb.ACTIVITY_LOGS]);
+      }
+
+      const localGas = loadLocalGasConfig();
+      if (!localGas.webAppUrl) {
+        return { gasSynced: false };
+      }
+
+      // If the backend already synced to GAS without error, update timestamp
+      if (serverRes?.gasSynced) {
+        return { gasSynced: true };
+      }
+
+      // Otherwise, perform direct browser -> Google Apps Script sync (crucial for github.io and Vercel cold-start instances)
+      const directSync = await syncLocalDbToGasIfConfigured(localDb, latestLog);
+      if (directSync.synced) {
+        setDatabaseStatus((prev) => ({
+          ...prev,
+          mode: 'GOOGLE_SHEETS',
+          connected: true,
+          gas_url_configured: true,
+          last_sync: new Date().toISOString(),
+          message:
+            'Terhubung & tersinkronisasi otomatis ke Google Sheets (Semua 8 Sheet & Activity Log)',
+        }));
+        return { gasSynced: true };
+      }
+
+      return {
+        gasSynced: false,
+        gasError: directSync.error || serverRes?.gasError,
+      };
+    },
+    [currentUser]
+  );
 
   const handleLoginSuccess = (newToken: string, user: User) => {
     localStorage.setItem('autosmart_token', newToken);
@@ -261,9 +348,25 @@ export default function App() {
     const res = (await apiRequest('/api/clients', {
       method: 'POST',
       body: JSON.stringify(payload),
-    })) as { client: Client };
+    })) as { client: Client; gasSynced?: boolean; gasError?: string };
     await loadBootstrapData();
-    showToast(`Pelanggan ${res.client.client_name} berhasil ditambahkan.`);
+    const syncInfo = await ensureGasSyncAfterMutation(
+      res,
+      'CREATE_CLIENT',
+      `Menambahkan pelanggan baru ${res.client.client_name} (${res.client.id})`
+    );
+    if (syncInfo.gasError) {
+      showToast(
+        `Pelanggan ${res.client.client_name} tersimpan di aplikasi, namun gagal kirim ke Google Sheets: ${syncInfo.gasError}`,
+        'error'
+      );
+    } else {
+      showToast(
+        syncInfo.gasSynced
+          ? `Pelanggan ${res.client.client_name} berhasil ditambahkan & tersimpan otomatis ke Google Sheets.`
+          : `Pelanggan ${res.client.client_name} berhasil ditambahkan.`
+      );
+    }
   };
 
   const handleUpdateClient = async (
@@ -273,14 +376,33 @@ export default function App() {
     const res = (await apiRequest(`/api/clients/${id}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
-    })) as { client: Client };
+    })) as { client: Client; gasSynced?: boolean; gasError?: string };
     await loadBootstrapData();
-    showToast(`Data pelanggan ${res.client.client_name} berhasil diperbarui.`);
+    const syncInfo = await ensureGasSyncAfterMutation(
+      res,
+      'UPDATE_CLIENT',
+      `Memperbarui data pelanggan ${res.client.client_name} (${id})`
+    );
+    if (syncInfo.gasError) {
+      showToast(
+        `Data pelanggan diperbarui, namun gagal sinkron ke Google Sheets: ${syncInfo.gasError}`,
+        'error'
+      );
+    } else {
+      showToast(`Data pelanggan ${res.client.client_name} berhasil diperbarui.`);
+    }
   };
 
   const handleDeleteClient = async (id: string) => {
-    await apiRequest(`/api/clients/${id}`, { method: 'DELETE' });
+    const res = (await apiRequest(`/api/clients/${id}`, {
+      method: 'DELETE',
+    })) as { gasSynced?: boolean; gasError?: string };
     await loadBootstrapData();
+    await ensureGasSyncAfterMutation(
+      res,
+      'DELETE_CLIENT',
+      `Menghapus pelanggan (${id})`
+    );
     showToast('Data pelanggan berhasil dihapus.');
   };
 
@@ -290,9 +412,21 @@ export default function App() {
     const res = (await apiRequest('/api/services', {
       method: 'POST',
       body: JSON.stringify(payload),
-    })) as { service: ServiceItem };
+    })) as { service: ServiceItem; gasSynced?: boolean; gasError?: string };
     await loadBootstrapData();
-    showToast(`Layanan ${res.service.service_name} berhasil ditambahkan.`);
+    const syncInfo = await ensureGasSyncAfterMutation(
+      res,
+      'CREATE_SERVICE',
+      `Menambahkan layanan ${res.service.service_name} (${res.service.id})`
+    );
+    if (syncInfo.gasError) {
+      showToast(
+        `Layanan ditambahkan, namun gagal sinkron ke Google Sheets: ${syncInfo.gasError}`,
+        'error'
+      );
+    } else {
+      showToast(`Layanan ${res.service.service_name} berhasil ditambahkan.`);
+    }
   };
 
   const handleUpdateService = async (
@@ -302,14 +436,26 @@ export default function App() {
     const res = (await apiRequest(`/api/services/${id}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
-    })) as { service: ServiceItem };
+    })) as { service: ServiceItem; gasSynced?: boolean; gasError?: string };
     await loadBootstrapData();
+    await ensureGasSyncAfterMutation(
+      res,
+      'UPDATE_SERVICE',
+      `Memperbarui layanan ${res.service.service_name} (${id})`
+    );
     showToast(`Layanan ${res.service.service_name} berhasil diperbarui.`);
   };
 
   const handleDeleteService = async (id: string) => {
-    await apiRequest(`/api/services/${id}`, { method: 'DELETE' });
+    const res = (await apiRequest(`/api/services/${id}`, {
+      method: 'DELETE',
+    })) as { gasSynced?: boolean; gasError?: string };
     await loadBootstrapData();
+    await ensureGasSyncAfterMutation(
+      res,
+      'DELETE_SERVICE',
+      `Menghapus layanan (${id})`
+    );
     showToast('Layanan berhasil dihapus dari katalog.');
   };
 
@@ -317,11 +463,21 @@ export default function App() {
     const res = (await apiRequest('/api/services/categories', {
       method: 'POST',
       body: JSON.stringify({ category: categoryName }),
-    })) as { settings?: CompanySettingsMap; added?: string };
+    })) as {
+      settings?: CompanySettingsMap;
+      added?: string;
+      gasSynced?: boolean;
+      gasError?: string;
+    };
     if (res.settings) {
       setSettings((prev) => ({ ...prev, ...res.settings }));
     }
     await loadBootstrapData();
+    await ensureGasSyncAfterMutation(
+      res,
+      'CREATE_CATEGORY',
+      `Menambahkan kategori layanan baru "${res.added || categoryName}"`
+    );
     showToast(`Kategori "${res.added || categoryName}" berhasil ditambahkan.`);
   };
 
@@ -329,11 +485,20 @@ export default function App() {
     const res = (await apiRequest('/api/services/categories', {
       method: 'PUT',
       body: JSON.stringify({ oldCategory: oldName, newCategory: newName }),
-    })) as { settings?: CompanySettingsMap };
+    })) as {
+      settings?: CompanySettingsMap;
+      gasSynced?: boolean;
+      gasError?: string;
+    };
     if (res.settings) {
       setSettings((prev) => ({ ...prev, ...res.settings }));
     }
     await loadBootstrapData();
+    await ensureGasSyncAfterMutation(
+      res,
+      'RENAME_CATEGORY',
+      `Mengubah nama kategori layanan "${oldName}" menjadi "${newName}"`
+    );
     showToast(
       `Kategori "${oldName}" berhasil diubah menjadi "${newName}".`
     );
@@ -350,11 +515,18 @@ export default function App() {
       settings?: CompanySettingsMap;
       reassignedCount?: number;
       fallbackUsed?: string;
+      gasSynced?: boolean;
+      gasError?: string;
     };
     if (res.settings) {
       setSettings((prev) => ({ ...prev, ...res.settings }));
     }
     await loadBootstrapData();
+    await ensureGasSyncAfterMutation(
+      res,
+      'DELETE_CATEGORY',
+      `Menghapus kategori layanan "${categoryName}"`
+    );
     showToast(
       (res.reassignedCount || 0) > 0
         ? `Kategori "${categoryName}" dihapus (${res.reassignedCount} layanan dipindahkan ke "${res.fallbackUsed}").`
@@ -365,11 +537,20 @@ export default function App() {
   const handleResetCategories = async () => {
     const res = (await apiRequest('/api/services/categories/reset', {
       method: 'POST',
-    })) as { settings?: CompanySettingsMap };
+    })) as {
+      settings?: CompanySettingsMap;
+      gasSynced?: boolean;
+      gasError?: string;
+    };
     if (res.settings) {
       setSettings((prev) => ({ ...prev, ...res.settings }));
     }
     await loadBootstrapData();
+    await ensureGasSyncAfterMutation(
+      res,
+      'RESET_CATEGORIES',
+      'Memulihkan daftar kategori layanan ke 16 kategori standar'
+    );
     showToast('Daftar kategori layanan standar berhasil dipulihkan.');
   };
 
@@ -384,9 +565,21 @@ export default function App() {
     const res = (await apiRequest('/api/invoices', {
       method: 'POST',
       body: JSON.stringify(payload),
-    })) as { invoice: Invoice };
+    })) as { invoice: Invoice; gasSynced?: boolean; gasError?: string };
     await loadBootstrapData();
-    showToast(`Invoice ${res.invoice.invoice_number} berhasil diterbitkan.`);
+    const syncInfo = await ensureGasSyncAfterMutation(
+      res,
+      'CREATE_INVOICE',
+      `Membuat invoice ${res.invoice.invoice_number} untuk ${res.invoice.client?.client_name || res.invoice.client_id}`
+    );
+    if (syncInfo.gasError) {
+      showToast(
+        `Invoice ${res.invoice.invoice_number} diterbitkan, namun gagal sinkron ke Google Sheets: ${syncInfo.gasError}`,
+        'error'
+      );
+    } else {
+      showToast(`Invoice ${res.invoice.invoice_number} berhasil diterbitkan.`);
+    }
     return res.invoice;
   };
 
@@ -397,15 +590,27 @@ export default function App() {
     const res = (await apiRequest(`/api/invoices/${id}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
-    })) as { invoice: Invoice };
+    })) as { invoice: Invoice; gasSynced?: boolean; gasError?: string };
     await loadBootstrapData();
+    await ensureGasSyncAfterMutation(
+      res,
+      'UPDATE_INVOICE',
+      `Memperbarui invoice ${res.invoice.invoice_number} (${id})`
+    );
     showToast(`Invoice ${res.invoice.invoice_number} berhasil diperbarui.`);
     return res.invoice;
   };
 
   const handleDeleteInvoice = async (id: string) => {
-    await apiRequest(`/api/invoices/${id}`, { method: 'DELETE' });
+    const res = (await apiRequest(`/api/invoices/${id}`, {
+      method: 'DELETE',
+    })) as { gasSynced?: boolean; gasError?: string };
     await loadBootstrapData();
+    await ensureGasSyncAfterMutation(
+      res,
+      'DELETE_INVOICE',
+      `Menghapus invoice (${id})`
+    );
     showToast('Dokumen invoice berhasil dihapus.');
   };
 
@@ -415,11 +620,23 @@ export default function App() {
     const res = (await apiRequest('/api/payments', {
       method: 'POST',
       body: JSON.stringify(payload),
-    })) as { payment: Payment };
+    })) as { payment: Payment; gasSynced?: boolean; gasError?: string };
     await loadBootstrapData();
-    showToast(
-      `Pembayaran ${res.payment.receipt_number} berhasil dicatat dan status invoice diperbarui.`
+    const syncInfo = await ensureGasSyncAfterMutation(
+      res,
+      'RECORD_PAYMENT',
+      `Mencatat pembayaran ${res.payment.receipt_number} sebesar Rp ${Number(res.payment.amount || 0).toLocaleString('id-ID')}`
     );
+    if (syncInfo.gasError) {
+      showToast(
+        `Pembayaran ${res.payment.receipt_number} dicatat, namun gagal sinkron ke Google Sheets: ${syncInfo.gasError}`,
+        'error'
+      );
+    } else {
+      showToast(
+        `Pembayaran ${res.payment.receipt_number} berhasil dicatat dan status invoice diperbarui.`
+      );
+    }
     return res.payment;
   };
 
@@ -430,8 +647,13 @@ export default function App() {
     const res = (await apiRequest(`/api/payments/${id}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
-    })) as { payment: Payment };
+    })) as { payment: Payment; gasSynced?: boolean; gasError?: string };
     await loadBootstrapData();
+    await ensureGasSyncAfterMutation(
+      res,
+      'UPDATE_PAYMENT',
+      `Memperbarui pembayaran ${res.payment.receipt_number}`
+    );
     showToast(
       `Catatan pembayaran ${res.payment.receipt_number} berhasil diperbarui.`
     );
@@ -439,8 +661,15 @@ export default function App() {
   };
 
   const handleDeletePayment = async (id: string) => {
-    await apiRequest(`/api/payments/${id}`, { method: 'DELETE' });
+    const res = (await apiRequest(`/api/payments/${id}`, {
+      method: 'DELETE',
+    })) as { gasSynced?: boolean; gasError?: string };
     await loadBootstrapData();
+    await ensureGasSyncAfterMutation(
+      res,
+      'DELETE_PAYMENT',
+      `Menghapus pembayaran (${id})`
+    );
     showToast('Catatan pembayaran berhasil dihapus.');
   };
 
@@ -448,18 +677,32 @@ export default function App() {
     const res = (await apiRequest('/api/settings', {
       method: 'PUT',
       body: JSON.stringify(updates),
-    })) as { settings?: CompanySettingsMap };
+    })) as {
+      settings?: CompanySettingsMap;
+      gasSynced?: boolean;
+      gasError?: string;
+    };
     setSettings((prev) => ({ ...prev, ...(res.settings || {}) }));
     await loadBootstrapData();
+    await ensureGasSyncAfterMutation(
+      res,
+      'UPDATE_SETTINGS',
+      'Memperbarui pengaturan profil & konfigurasi perusahaan'
+    );
     showToast('Pengaturan identitas perusahaan berhasil disimpan.');
   };
 
   const handleCreateUser = async (payload: Record<string, unknown>) => {
-    await apiRequest('/api/users', {
+    const res = (await apiRequest('/api/users', {
       method: 'POST',
       body: JSON.stringify(payload),
-    });
+    })) as { user?: User; gasSynced?: boolean; gasError?: string };
     await loadBootstrapData();
+    await ensureGasSyncAfterMutation(
+      res,
+      'CREATE_USER',
+      `Menambahkan akun pengguna ${String(payload.email || '')} (${String(payload.role || 'Staff')})`
+    );
     showToast('Pengguna baru berhasil ditambahkan.');
   };
 
@@ -467,11 +710,16 @@ export default function App() {
     id: string,
     payload: Record<string, unknown>
   ) => {
-    await apiRequest(`/api/users/${id}`, {
+    const res = (await apiRequest(`/api/users/${id}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
-    });
+    })) as { gasSynced?: boolean; gasError?: string };
     await loadBootstrapData();
+    await ensureGasSyncAfterMutation(
+      res,
+      'UPDATE_USER',
+      `Memperbarui akun pengguna (${id})`
+    );
     showToast('Data pengguna berhasil diperbarui.');
   };
 
@@ -488,14 +736,33 @@ export default function App() {
     const res = (await apiRequest('/api/database/config', {
       method: 'POST',
       body: JSON.stringify({ webAppUrl, apiSecret }),
-    })) as { databaseStatus?: DatabaseStatus; autoSynced?: boolean };
+    })) as {
+      databaseStatus?: DatabaseStatus;
+      autoSynced?: boolean;
+      autoSyncError?: string;
+    };
     if (res.databaseStatus) {
       setDatabaseStatus(res.databaseStatus);
     }
+
+    // Guarantee direct push of all local data (including existing clients like Es Dawet Palembang)
+    let directSynced = Boolean(res.autoSynced);
+    let directError = res.autoSyncError || '';
+    if (webAppUrl.trim() && !directSynced) {
+      const syncCheck = await syncLocalDbToGasIfConfigured(loadLocalDb());
+      directSynced = syncCheck.synced;
+      if (!syncCheck.synced && syncCheck.error) {
+        directError = syncCheck.error;
+      }
+    }
+
     await loadBootstrapData();
+    if (webAppUrl.trim() && !directSynced && directError) {
+      throw new Error(directError);
+    }
     showToast(
-      res.autoSynced
-        ? 'Terhubung! Data nota & invoice berhasil disinkronkan ke Google Sheets.'
+      directSynced
+        ? 'Terhubung! Seluruh data pelanggan, layanan, invoice, kwitansi & log berhasil disinkronkan ke Google Sheets.'
         : 'Konfigurasi koneksi Google Apps Script berhasil disimpan.'
     );
   };
@@ -503,14 +770,16 @@ export default function App() {
   const handleTriggerDatabaseSync = async () => {
     await apiRequest('/api/database/sync', { method: 'POST' });
     await loadBootstrapData();
-    showToast('Sinkronisasi (Push) seluruh nota ke Google Sheets berhasil.');
+    showToast(
+      'Sinkronisasi (Push) seluruh data & log aktivitas ke Google Sheets berhasil.'
+    );
   };
 
   const handlePullDatabaseFromGas = async () => {
     await apiRequest('/api/database/pull', { method: 'POST' });
     await loadBootstrapData();
     showToast(
-      'Data nota, invoice, pembayaran, dan klien berhasil ditarik dari Google Sheets.'
+      'Data nota, invoice, pembayaran, pelanggan, dan log berhasil ditarik dari Google Sheets.'
     );
   };
 
