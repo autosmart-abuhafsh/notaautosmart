@@ -142,6 +142,7 @@ export interface DatabaseStatus {
   spreadsheet_name: string;
   gas_url_configured: boolean;
   gas_url_masked: string;
+  gas_url?: string;
   last_sync: string | null;
   message: string;
 }

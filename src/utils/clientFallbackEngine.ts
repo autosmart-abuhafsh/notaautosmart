@@ -311,10 +311,118 @@ export function saveLocalDb(db: LocalDbState): void {
   }
 }
 
+const SEED_SERVICE_IDS = new Set([
+  'SRV-0001',
+  'SRV-0002',
+  'SRV-0003',
+  'SRV-0005',
+  'SRV-0007',
+  'SRV-0008',
+  'SRV-0011',
+  'SRV-0014',
+]);
+
+const STORAGE_SYNCED_IDS_KEY = 'autosmart_synced_ids_v1';
+const STORAGE_DELETED_IDS_KEY = 'autosmart_deleted_ids_v1';
+
+export function loadSyncedIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_SYNCED_IDS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return new Set(arr.map(String));
+    }
+  } catch {
+    // ignore
+  }
+  return new Set();
+}
+
+export function saveSyncedIds(ids: Iterable<string>): void {
+  try {
+    localStorage.setItem(
+      STORAGE_SYNCED_IDS_KEY,
+      JSON.stringify(Array.from(new Set(ids)))
+    );
+  } catch {
+    // ignore
+  }
+}
+
+export function loadDeletedIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_DELETED_IDS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return new Set(arr.map(String));
+    }
+  } catch {
+    // ignore
+  }
+  return new Set();
+}
+
+export function markEntityDeleted(id: string): void {
+  if (!id) return;
+  const deleted = loadDeletedIds();
+  deleted.add(id);
+  try {
+    localStorage.setItem(
+      STORAGE_DELETED_IDS_KEY,
+      JSON.stringify(Array.from(deleted))
+    );
+  } catch {
+    // ignore
+  }
+}
+
+export function unmarkEntityDeleted(id: string): void {
+  if (!id) return;
+  const deleted = loadDeletedIds();
+  if (deleted.has(id)) {
+    deleted.delete(id);
+    try {
+      localStorage.setItem(
+        STORAGE_DELETED_IDS_KEY,
+        JSON.stringify(Array.from(deleted))
+      );
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function recordDbSyncedIds(db: LocalDbState): void {
+  const synced = loadSyncedIds();
+  for (const c of db.CLIENTS) if (c.id) synced.add(c.id);
+  for (const s of db.SERVICES) if (s.id) synced.add(s.id);
+  for (const i of db.INVOICES) if (i.id) synced.add(i.id);
+  for (const p of db.PAYMENTS) if (p.id) synced.add(p.id);
+  for (const u of db.USERS) if (u.id) synced.add(u.id);
+  saveSyncedIds(synced);
+}
+
+function extractDeletedIdsFromLogs(
+  logs: Array<{ activity?: unknown; description?: unknown }>
+): Set<string> {
+  const result = new Set<string>();
+  const idRegex = /\b(CLT-\d+|SRV-\d+|INV-\d+|PAY-\d+|USR-\d+)\b/g;
+  for (const log of logs) {
+    const act = String(log?.activity || '').toUpperCase();
+    if (act.startsWith('DELETE_')) {
+      const desc = String(log?.description || '');
+      let match: RegExpExecArray | null;
+      while ((match = idRegex.exec(desc)) !== null) {
+        result.add(match[1]);
+      }
+    }
+  }
+  return result;
+}
+
 /**
- * Merges server bootstrap data with browser localStorage safely.
- * Protects against Vercel serverless cold-starts where the server's ephemeral /tmp database
- * resets to 0 clients/invoices while the browser still has user-created records.
+ * Merges server bootstrap data with browser localStorage safely while respecting deletions
+ * across Mobile (HP) and Desktop (PC) devices.
  */
 export function mirrorBootstrapToLocalDb(boot: {
   clients?: Client[];
@@ -324,6 +432,7 @@ export function mirrorBootstrapToLocalDb(boot: {
   settings?: CompanySettingsMap;
   users?: User[];
   activityLogs?: ActivityLog[];
+  databaseStatus?: DatabaseStatus;
 }): {
   mergedDb: LocalDbState;
   mergedSettings: CompanySettingsMap;
@@ -333,50 +442,116 @@ export function mirrorBootstrapToLocalDb(boot: {
   const current = loadLocalDb();
   let localHadMoreData = false;
 
-  // Clients: if server returned non-empty OR local is also empty, use server;
-  // if server cold-started empty while local has clients, merge/keep local!
+  // If the server is configured with a GAS Web App URL and this browser doesn't have one yet, adopt it automatically!
+  if (boot.databaseStatus?.gas_url) {
+    const localCfg = loadLocalGasConfig();
+    if (!localCfg.webAppUrl) {
+      saveLocalGasConfig({
+        ...localCfg,
+        webAppUrl: boot.databaseStatus.gas_url.trim(),
+        lastSync: boot.databaseStatus.last_sync || localCfg.lastSync,
+        spreadsheetName:
+          boot.databaseStatus.spreadsheet_name || localCfg.spreadsheetName,
+      });
+    }
+  }
+
+  const syncedIds = loadSyncedIds();
+  const localDeletedIds = loadDeletedIds();
+  const logDeletedIds = extractDeletedIdsFromLogs([
+    ...(boot.activityLogs || []),
+    ...(current.ACTIVITY_LOGS || []),
+  ]);
+  const allDeletedIds = new Set([...localDeletedIds, ...logDeletedIds]);
+  const serverConnectedToGas = Boolean(
+    boot.databaseStatus?.connected || boot.databaseStatus?.gas_url_configured
+  );
+
+  // 1. Clients Reconciliation
   if (Array.isArray(boot.clients)) {
-    if (boot.clients.length > 0 || current.CLIENTS.length === 0) {
-      // Merge any local clients not in server by id if server had fewer
-      const serverIds = new Set(boot.clients.map((c) => c.id));
-      const missingLocal = current.CLIENTS.filter((c) => !serverIds.has(c.id));
-      if (boot.clients.length === 0 && missingLocal.length > 0) {
-        localHadMoreData = true;
-      } else {
-        current.CLIENTS = boot.clients;
-      }
-    } else {
+    const serverClients = boot.clients.filter((c) => !localDeletedIds.has(c.id));
+    const serverIds = new Set(serverClients.map((c) => c.id));
+    const unsyncedLocalClients = current.CLIENTS.filter(
+      (c) =>
+        !serverIds.has(c.id) &&
+        !allDeletedIds.has(c.id) &&
+        (!syncedIds.has(c.id) || !serverConnectedToGas)
+    );
+    if (unsyncedLocalClients.length > 0) {
       localHadMoreData = true;
     }
+    current.CLIENTS = [...unsyncedLocalClients, ...serverClients];
   }
 
+  // 2. Services Reconciliation (merges custom unsynced services like SRV-0015 & SRV-0016)
   if (Array.isArray(boot.services) && boot.services.length > 0) {
-    current.SERVICES = boot.services;
+    const serverServices = boot.services.filter(
+      (s) => !localDeletedIds.has(s.id)
+    );
+    const serverIds = new Set(serverServices.map((s) => s.id));
+    const unsyncedLocalServices = current.SERVICES.filter(
+      (s) =>
+        !serverIds.has(s.id) &&
+        !SEED_SERVICE_IDS.has(s.id) &&
+        !allDeletedIds.has(s.id) &&
+        (!syncedIds.has(s.id) || !serverConnectedToGas)
+    );
+    if (unsyncedLocalServices.length > 0) {
+      localHadMoreData = true;
+    }
+    current.SERVICES = [...unsyncedLocalServices, ...serverServices];
   }
 
+  // 3. Invoices & Items Reconciliation
   if (Array.isArray(boot.invoices)) {
-    if (boot.invoices.length > 0 || current.INVOICES.length === 0) {
-      current.INVOICES = boot.invoices.map(
-        ({ items: _it, client: _cl, ...rest }) => rest
-      );
-      const allItems: InvoiceLineItem[] = [];
-      for (const inv of boot.invoices) {
-        if (Array.isArray(inv.items)) {
-          allItems.push(...inv.items);
-        }
-      }
-      current.INVOICE_ITEMS = allItems;
-    } else {
+    const serverInvoices = boot.invoices.filter(
+      (i) => !localDeletedIds.has(i.id)
+    );
+    const serverIds = new Set(serverInvoices.map((i) => i.id));
+    const unsyncedLocalInvoices = current.INVOICES.filter(
+      (i) =>
+        !serverIds.has(i.id) &&
+        !allDeletedIds.has(i.id) &&
+        (!syncedIds.has(i.id) || !serverConnectedToGas)
+    );
+    if (unsyncedLocalInvoices.length > 0) {
       localHadMoreData = true;
     }
+
+    const strippedServerInvoices = serverInvoices.map(
+      ({ items: _it, client: _cl, ...rest }) => rest
+    );
+    current.INVOICES = [...unsyncedLocalInvoices, ...strippedServerInvoices];
+
+    const serverItems: InvoiceLineItem[] = [];
+    for (const inv of serverInvoices) {
+      if (Array.isArray(inv.items)) {
+        serverItems.push(...inv.items);
+      }
+    }
+    const unsyncedInvIds = new Set(unsyncedLocalInvoices.map((i) => i.id));
+    const unsyncedItems = current.INVOICE_ITEMS.filter((it) =>
+      unsyncedInvIds.has(it.invoice_id)
+    );
+    current.INVOICE_ITEMS = [...unsyncedItems, ...serverItems];
   }
 
+  // 4. Payments Reconciliation
   if (Array.isArray(boot.payments)) {
-    if (boot.payments.length > 0 || current.PAYMENTS.length === 0) {
-      current.PAYMENTS = boot.payments;
-    } else {
+    const serverPayments = boot.payments.filter(
+      (p) => !localDeletedIds.has(p.id)
+    );
+    const serverIds = new Set(serverPayments.map((p) => p.id));
+    const unsyncedLocalPayments = current.PAYMENTS.filter(
+      (p) =>
+        !serverIds.has(p.id) &&
+        !allDeletedIds.has(p.id) &&
+        (!syncedIds.has(p.id) || !serverConnectedToGas)
+    );
+    if (unsyncedLocalPayments.length > 0) {
       localHadMoreData = true;
     }
+    current.PAYMENTS = [...unsyncedLocalPayments, ...serverPayments];
   }
 
   const mergedSettings: CompanySettingsMap = {
@@ -423,7 +598,6 @@ export function mirrorBootstrapToLocalDb(boot: {
 
   if (Array.isArray(boot.activityLogs)) {
     if (boot.activityLogs.length > 0) {
-      // Merge unique logs by id, sorted newest first
       const byId = new Map<string, ActivityLog>();
       for (const l of [...boot.activityLogs, ...current.ACTIVITY_LOGS]) {
         if (l && l.id && !byId.has(l.id)) {
@@ -436,6 +610,9 @@ export function mirrorBootstrapToLocalDb(boot: {
     }
   }
 
+  if (serverConnectedToGas) {
+    recordDbSyncedIds(current);
+  }
   saveLocalDb(current);
 
   return {
@@ -590,8 +767,12 @@ export async function syncLocalDbToGasIfConfigured(
       };
     }
 
+    recordDbSyncedIds(activeDb);
     cfg.lastSync = new Date().toISOString();
-    if (typeof response.spreadsheetName === 'string' && response.spreadsheetName) {
+    if (
+      typeof response.spreadsheetName === 'string' &&
+      response.spreadsheetName
+    ) {
       cfg.spreadsheetName = response.spreadsheetName;
     }
     saveLocalGasConfig(cfg);
@@ -612,7 +793,8 @@ export async function syncLocalDbToGasIfConfigured(
 }
 
 /**
- * Pulls all 8 sheets directly from Google Apps Script into localStorage DB.
+ * Pulls all 8 sheets directly from Google Apps Script into localStorage DB,
+ * reconciling any unsynced local creations while strictly removing any items deleted on other devices.
  */
 export async function pullFromGasDirectToLocalDb(
   user?: { id: string; name?: string } | null
@@ -620,6 +802,7 @@ export async function pullFromGasDirectToLocalDb(
   ok: boolean;
   lastSync: string | null;
   spreadsheetName?: string;
+  pushedMergedAdditions?: boolean;
   error?: string;
 }> {
   const cfg = loadLocalGasConfig();
@@ -641,9 +824,19 @@ export async function pullFromGasDirectToLocalDb(
 
   const db = loadLocalDb();
   const remote = res.data as Record<string, Array<Record<string, unknown>>>;
+  const syncedIds = loadSyncedIds();
+  const localDeletedIds = loadDeletedIds();
+  const logDeletedIds = extractDeletedIdsFromLogs([
+    ...(Array.isArray(remote.ACTIVITY_LOGS) ? remote.ACTIVITY_LOGS : []),
+    ...(db.ACTIVITY_LOGS || []),
+  ]);
+  const allDeletedIds = new Set([...localDeletedIds, ...logDeletedIds]);
 
+  let needsPushBackToGas = false;
+
+  // 1. CLIENTS
   if (Array.isArray(remote.CLIENTS)) {
-    db.CLIENTS = remote.CLIENTS.map((c) => ({
+    const parsedRemoteClients: Client[] = remote.CLIENTS.map((c) => ({
       id: String(c.id || ''),
       client_name: String(c.client_name || ''),
       contact_person: String(c.contact_person || ''),
@@ -653,24 +846,73 @@ export async function pullFromGasDirectToLocalDb(
       address: String(c.address || ''),
       notes: String(c.notes || ''),
       created_at: String(c.created_at || new Date().toISOString()),
-    }));
+    })).filter((c) => {
+      if (!c.id) return false;
+      if (localDeletedIds.has(c.id)) {
+        needsPushBackToGas = true;
+        return false;
+      }
+      return true;
+    });
+
+    const remoteClientIds = new Set(parsedRemoteClients.map((c) => c.id));
+    const unsyncedLocalClients = db.CLIENTS.filter(
+      (c) =>
+        c.id &&
+        !remoteClientIds.has(c.id) &&
+        !syncedIds.has(c.id) &&
+        !allDeletedIds.has(c.id)
+    );
+    if (unsyncedLocalClients.length > 0) {
+      needsPushBackToGas = true;
+    }
+    db.CLIENTS = [...unsyncedLocalClients, ...parsedRemoteClients];
   }
 
-  if (Array.isArray(remote.SERVICES) && remote.SERVICES.length > 0) {
-    db.SERVICES = remote.SERVICES.map((s) => ({
+  // 2. SERVICES
+  if (Array.isArray(remote.SERVICES)) {
+    const parsedRemoteServices: ServiceItem[] = remote.SERVICES.map((s) => ({
       id: String(s.id || ''),
       service_name: String(s.service_name || ''),
       category: String(s.category || 'Layanan Digital Lainnya'),
       description: String(s.description || ''),
       unit: String(s.unit || 'Paket'),
       price: Math.round(Number(s.price ?? s.default_price) || 0),
-      status: s.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
+      status:
+        s.status === 'Nonaktif' ? ('Nonaktif' as const) : ('Aktif' as const),
       created_at: String(s.created_at || new Date().toISOString()),
-    }));
+    })).filter((s) => {
+      if (!s.id) return false;
+      if (localDeletedIds.has(s.id)) {
+        needsPushBackToGas = true;
+        return false;
+      }
+      return true;
+    });
+
+    if (parsedRemoteServices.length > 0) {
+      const remoteServiceIds = new Set(parsedRemoteServices.map((s) => s.id));
+      const unsyncedLocalServices = db.SERVICES.filter(
+        (s) =>
+          s.id &&
+          !remoteServiceIds.has(s.id) &&
+          !SEED_SERVICE_IDS.has(s.id) &&
+          !syncedIds.has(s.id) &&
+          !allDeletedIds.has(s.id)
+      );
+      if (unsyncedLocalServices.length > 0) {
+        needsPushBackToGas = true;
+      }
+      db.SERVICES = [...unsyncedLocalServices, ...parsedRemoteServices];
+    } else if (db.SERVICES.length > 0) {
+      needsPushBackToGas = true;
+    }
   }
 
+  // 3. INVOICES
+  let unsyncedLocalInvoiceIds = new Set<string>();
   if (Array.isArray(remote.INVOICES)) {
-    db.INVOICES = remote.INVOICES.map((inv) => ({
+    const parsedRemoteInvoices: Invoice[] = remote.INVOICES.map((inv) => ({
       id: String(inv.id || ''),
       invoice_number: String(inv.invoice_number || ''),
       client_id: String(inv.client_id || ''),
@@ -695,25 +937,56 @@ export async function pullFromGasDirectToLocalDb(
       notes: String(inv.notes || ''),
       created_at: String(inv.created_at || new Date().toISOString()),
       updated_at: String(inv.updated_at || new Date().toISOString()),
-    }));
+    })).filter((inv) => {
+      if (!inv.id) return false;
+      if (localDeletedIds.has(inv.id)) {
+        needsPushBackToGas = true;
+        return false;
+      }
+      return true;
+    });
+
+    const remoteInvIds = new Set(parsedRemoteInvoices.map((i) => i.id));
+    const unsyncedLocalInvoices = db.INVOICES.filter(
+      (i) =>
+        i.id &&
+        !remoteInvIds.has(i.id) &&
+        !syncedIds.has(i.id) &&
+        !allDeletedIds.has(i.id)
+    );
+    if (unsyncedLocalInvoices.length > 0) {
+      needsPushBackToGas = true;
+      unsyncedLocalInvoiceIds = new Set(unsyncedLocalInvoices.map((i) => i.id));
+    }
+    db.INVOICES = [...unsyncedLocalInvoices, ...parsedRemoteInvoices];
   }
 
+  // 4. INVOICE_ITEMS
   if (Array.isArray(remote.INVOICE_ITEMS)) {
-    db.INVOICE_ITEMS = remote.INVOICE_ITEMS.map((it) => ({
-      id: String(it.id || ''),
-      invoice_id: String(it.invoice_id || ''),
-      service_id: String(it.service_id || ''),
-      description: String(it.description || ''),
-      quantity: Number(it.quantity) || 1,
-      unit: String(it.unit || 'Paket'),
-      unit_price: Math.round(Number(it.unit_price) || 0),
-      discount: Math.round(Number(it.discount) || 0),
-      total: Math.round(Number(it.total) || 0),
-    }));
+    const validInvoiceIds = new Set(db.INVOICES.map((i) => i.id));
+    const parsedRemoteItems: InvoiceLineItem[] = remote.INVOICE_ITEMS.map(
+      (it) => ({
+        id: String(it.id || ''),
+        invoice_id: String(it.invoice_id || ''),
+        service_id: String(it.service_id || ''),
+        description: String(it.description || ''),
+        quantity: Number(it.quantity) || 1,
+        unit: String(it.unit || 'Paket'),
+        unit_price: Math.round(Number(it.unit_price) || 0),
+        discount: Math.round(Number(it.discount) || 0),
+        total: Math.round(Number(it.total) || 0),
+      })
+    ).filter((it) => validInvoiceIds.has(it.invoice_id));
+
+    const unsyncedItems = db.INVOICE_ITEMS.filter((it) =>
+      unsyncedLocalInvoiceIds.has(it.invoice_id)
+    );
+    db.INVOICE_ITEMS = [...unsyncedItems, ...parsedRemoteItems];
   }
 
+  // 5. PAYMENTS
   if (Array.isArray(remote.PAYMENTS)) {
-    db.PAYMENTS = remote.PAYMENTS.map((p) => ({
+    const parsedRemotePayments: Payment[] = remote.PAYMENTS.map((p) => ({
       id: String(p.id || ''),
       receipt_number: String(p.receipt_number ?? p.payment_number ?? ''),
       invoice_id: String(p.invoice_id || ''),
@@ -724,9 +997,30 @@ export async function pullFromGasDirectToLocalDb(
       reference_number: String(p.reference_number || ''),
       notes: String(p.notes || ''),
       created_at: String(p.created_at || new Date().toISOString()),
-    }));
+    })).filter((p) => {
+      if (!p.id) return false;
+      if (localDeletedIds.has(p.id)) {
+        needsPushBackToGas = true;
+        return false;
+      }
+      return true;
+    });
+
+    const remotePayIds = new Set(parsedRemotePayments.map((p) => p.id));
+    const unsyncedLocalPayments = db.PAYMENTS.filter(
+      (p) =>
+        p.id &&
+        !remotePayIds.has(p.id) &&
+        !syncedIds.has(p.id) &&
+        !allDeletedIds.has(p.id)
+    );
+    if (unsyncedLocalPayments.length > 0) {
+      needsPushBackToGas = true;
+    }
+    db.PAYMENTS = [...unsyncedLocalPayments, ...parsedRemotePayments];
   }
 
+  // 6. COMPANY_SETTINGS
   if (
     Array.isArray(remote.COMPANY_SETTINGS) &&
     remote.COMPANY_SETTINGS.length > 0
@@ -739,20 +1033,38 @@ export async function pullFromGasDirectToLocalDb(
         nextSettings[k] = v;
       }
     }
+    // Ensure custom categories include any categories used by merged services
+    const mergedCats = parseServiceCategories(
+      nextSettings.service_categories,
+      db.SERVICES
+    );
+    nextSettings.service_categories = JSON.stringify(mergedCats);
     db.SETTINGS = nextSettings;
   }
 
-  if (Array.isArray(remote.ACTIVITY_LOGS) && remote.ACTIVITY_LOGS.length > 0) {
-    db.ACTIVITY_LOGS = remote.ACTIVITY_LOGS.map((l, idx) => ({
-      id: String(l.id || `LOG-R-${idx + 1}`),
-      user_id: String(l.user_id || 'USR-0001'),
-      user_name:
-        db.USERS.find((u) => u.id === String(l.user_id || ''))?.name ||
-        'Administrator Autosmart',
-      activity: String(l.activity || 'ACTIVITY'),
-      description: String(l.description || ''),
-      timestamp: String(l.timestamp || new Date().toISOString()),
-    }));
+  // 7. ACTIVITY_LOGS (Merge remote and local unique logs, sorted newest first)
+  if (Array.isArray(remote.ACTIVITY_LOGS)) {
+    const parsedRemoteLogs: ActivityLog[] = remote.ACTIVITY_LOGS.map(
+      (l, idx) => ({
+        id: String(l.id || `LOG-R-${idx + 1}`),
+        user_id: String(l.user_id || 'USR-0001'),
+        user_name:
+          db.USERS.find((u) => u.id === String(l.user_id || ''))?.name ||
+          'Administrator Autosmart',
+        activity: String(l.activity || 'ACTIVITY'),
+        description: String(l.description || ''),
+        timestamp: String(l.timestamp || new Date().toISOString()),
+      })
+    );
+    const byId = new Map<string, ActivityLog>();
+    for (const l of [...parsedRemoteLogs, ...(db.ACTIVITY_LOGS || [])]) {
+      if (l && l.id && !byId.has(l.id)) {
+        byId.set(l.id, l);
+      }
+    }
+    db.ACTIVITY_LOGS = Array.from(byId.values())
+      .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''))
+      .slice(0, 300);
   }
 
   if (user) {
@@ -760,20 +1072,27 @@ export async function pullFromGasDirectToLocalDb(
       db,
       user,
       'PULL_DATABASE',
-      'Menarik data terbaru dari Google Sheets (AUTOSMART_INVOICE_DATABASE)'
+      'Menyinkronkan data terbaru antar perangkat dari Google Sheets'
     );
   }
 
+  recordDbSyncedIds(db);
   saveLocalDb(db);
   cfg.lastSync = new Date().toISOString();
   if (typeof res.spreadsheetName === 'string' && res.spreadsheetName) {
     cfg.spreadsheetName = res.spreadsheetName;
   }
   saveLocalGasConfig(cfg);
+
+  if (needsPushBackToGas) {
+    await syncLocalDbToGasIfConfigured(db);
+  }
+
   return {
     ok: true,
     lastSync: cfg.lastSync,
     spreadsheetName: cfg.spreadsheetName,
+    pushedMergedAdditions: needsPushBackToGas,
   };
 }
 
@@ -835,9 +1154,24 @@ export async function handleClientFallbackApi(
 ): Promise<unknown> {
   const method = (options.method || 'GET').toUpperCase();
   const body = options.body ? JSON.parse(String(options.body)) : {};
-  const db = loadLocalDb();
+  let db = loadLocalDb();
   const currentUser = getUserFromLocalToken(activeToken);
   const cfg = loadLocalGasConfig();
+
+  // Pull-before-write on any mutation when GAS is configured so HP and PC never overwrite each other
+  if (
+    cfg.webAppUrl &&
+    (method === 'POST' || method === 'PUT' || method === 'DELETE') &&
+    !url.startsWith('/api/auth/') &&
+    !url.startsWith('/api/database/')
+  ) {
+    try {
+      await pullFromGasDirectToLocalDb();
+      db = loadLocalDb();
+    } catch {
+      // continue with local state if offline
+    }
+  }
 
   // 1. Auth Endpoints
   if (url === '/api/auth/login' && method === 'POST') {
@@ -859,19 +1193,13 @@ export async function handleClientFallbackApi(
     return { ok: true };
   }
 
-  // 2. Bootstrap Endpoint
+  // 2. Bootstrap Endpoint — Always pull & reconcile with Google Sheets when GAS URL is configured!
   if (url === '/api/bootstrap' && method === 'GET') {
-    // If GAS is configured and local has 0 clients/invoices and hasn't synced yet, try pulling from GAS once
-    if (
-      cfg.webAppUrl &&
-      db.CLIENTS.length === 0 &&
-      db.INVOICES.length === 0 &&
-      !cfg.lastSync
-    ) {
+    if (cfg.webAppUrl) {
       try {
         await pullFromGasDirectToLocalDb();
       } catch {
-        // continue with local state
+        // continue with local state if offline
       }
     }
 
@@ -903,9 +1231,10 @@ export async function handleClientFallbackApi(
       gas_url_masked: latestCfg.webAppUrl
         ? `${latestCfg.webAppUrl.slice(0, 42)}...`
         : '',
+      gas_url: latestCfg.webAppUrl || undefined,
       last_sync: latestCfg.lastSync,
       message: latestCfg.webAppUrl
-        ? 'Terhubung & Tersinkronisasi Otomatis ke Google Sheets (Google Apps Script)'
+        ? 'Terhubung & Tersinkronisasi Otomatis ke Google Sheets (HP & PC)'
         : 'Database Persisten Aktif (Siap disinkronkan ke Google Sheets)',
     };
 
@@ -937,6 +1266,7 @@ export async function handleClientFallbackApi(
       notes: String(body.notes || '').trim(),
       created_at: new Date().toISOString(),
     };
+    unmarkEntityDeleted(newClient.id);
     db.CLIENTS.unshift(newClient);
     const log = appendLocalActivityLog(
       db,
@@ -990,6 +1320,7 @@ export async function handleClientFallbackApi(
       );
     }
     const target = db.CLIENTS.find((c) => c.id === id);
+    markEntityDeleted(id);
     db.CLIENTS = db.CLIENTS.filter((c) => c.id !== id);
     const log = appendLocalActivityLog(
       db,
@@ -1135,6 +1466,7 @@ export async function handleClientFallbackApi(
       status: body.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
       created_at: new Date().toISOString(),
     };
+    unmarkEntityDeleted(newService.id);
     db.SERVICES.unshift(newService);
     const currentCats = parseServiceCategories(
       db.SETTINGS.service_categories,
@@ -1204,6 +1536,7 @@ export async function handleClientFallbackApi(
   if (url.startsWith('/api/services/') && method === 'DELETE') {
     const id = url.split('/').pop() || '';
     const target = db.SERVICES.find((s) => s.id === id);
+    markEntityDeleted(id);
     db.SERVICES = db.SERVICES.filter((s) => s.id !== id);
     const log = appendLocalActivityLog(
       db,
@@ -1226,6 +1559,7 @@ export async function handleClientFallbackApi(
       db.INVOICES.map((i) => i.id),
       'INV'
     );
+    unmarkEntityDeleted(invoiceId);
     const invoiceNumber = generateNextDocumentNumber(
       db.INVOICES.map((i) => i.invoice_number),
       db.SETTINGS.invoice_prefix || 'INV/ASM',
@@ -1297,7 +1631,7 @@ export async function handleClientFallbackApi(
       db,
       currentUser,
       'CREATE_INVOICE',
-      `Membuat invoice ${invoiceNumber} untuk ${client?.client_name || newInvoice.client_id} senilai Rp ${newInvoice.grand_total.toLocaleString('id-ID')}`
+      `Membuat invoice ${invoiceNumber} (${invoiceId}) untuk ${client?.client_name || newInvoice.client_id} senilai Rp ${newInvoice.grand_total.toLocaleString('id-ID')}`
     );
     saveLocalDb(db);
     const syncRes = await syncLocalDbToGasIfConfigured(db, log);
@@ -1383,7 +1717,7 @@ export async function handleClientFallbackApi(
       db,
       currentUser,
       'UPDATE_INVOICE',
-      `Memperbarui invoice ${existing.invoice_number}`
+      `Memperbarui invoice ${existing.invoice_number} (${id})`
     );
     saveLocalDb(db);
     const syncRes = await syncLocalDbToGasIfConfigured(db, log);
@@ -1402,6 +1736,12 @@ export async function handleClientFallbackApi(
   if (url.startsWith('/api/invoices/') && method === 'DELETE') {
     const id = url.split('/').pop() || '';
     const target = db.INVOICES.find((i) => i.id === id);
+    markEntityDeleted(id);
+    for (const p of db.PAYMENTS) {
+      if (p.invoice_id === id) {
+        markEntityDeleted(p.id);
+      }
+    }
     db.INVOICES = db.INVOICES.filter((i) => i.id !== id);
     db.INVOICE_ITEMS = db.INVOICE_ITEMS.filter((it) => it.invoice_id !== id);
     db.PAYMENTS = db.PAYMENTS.filter((p) => p.invoice_id !== id);
@@ -1409,7 +1749,7 @@ export async function handleClientFallbackApi(
       db,
       currentUser,
       'DELETE_INVOICE',
-      `Menghapus invoice ${target?.invoice_number || id} beserta item terkait`
+      `Menghapus invoice ${target?.invoice_number || id} (${id}) beserta item terkait`
     );
     saveLocalDb(db);
     const syncRes = await syncLocalDbToGasIfConfigured(db, log);
@@ -1443,6 +1783,7 @@ export async function handleClientFallbackApi(
       notes: String(body.notes || ''),
       created_at: new Date().toISOString(),
     };
+    unmarkEntityDeleted(newPayment.id);
     db.PAYMENTS.unshift(newPayment);
     const updatedInvoice = db.INVOICES.find(
       (i) => i.id === newPayment.invoice_id
@@ -1451,7 +1792,7 @@ export async function handleClientFallbackApi(
       db,
       currentUser,
       'RECORD_PAYMENT',
-      `Mencatat pembayaran ${receiptNumber} sebesar Rp ${newPayment.amount.toLocaleString('id-ID')} untuk invoice ${updatedInvoice?.invoice_number || newPayment.invoice_id}`
+      `Mencatat pembayaran ${receiptNumber} (${newPayment.id}) sebesar Rp ${newPayment.amount.toLocaleString('id-ID')} untuk invoice ${updatedInvoice?.invoice_number || newPayment.invoice_id}`
     );
     saveLocalDb(db);
     const syncRes = await syncLocalDbToGasIfConfigured(db, log);
@@ -1481,7 +1822,7 @@ export async function handleClientFallbackApi(
       db,
       currentUser,
       'UPDATE_PAYMENT',
-      `Memperbarui catatan pembayaran ${db.PAYMENTS[idx].receipt_number}`
+      `Memperbarui catatan pembayaran ${db.PAYMENTS[idx].receipt_number} (${id})`
     );
     saveLocalDb(db);
     const syncRes = await syncLocalDbToGasIfConfigured(db, log);
@@ -1495,12 +1836,13 @@ export async function handleClientFallbackApi(
   if (url.startsWith('/api/payments/') && method === 'DELETE') {
     const id = url.split('/').pop() || '';
     const target = db.PAYMENTS.find((p) => p.id === id);
+    markEntityDeleted(id);
     db.PAYMENTS = db.PAYMENTS.filter((p) => p.id !== id);
     const log = appendLocalActivityLog(
       db,
       currentUser,
       'DELETE_PAYMENT',
-      `Menghapus bukti pembayaran ${target?.receipt_number || id}`
+      `Menghapus bukti pembayaran ${target?.receipt_number || id} (${id})`
     );
     saveLocalDb(db);
     const syncRes = await syncLocalDbToGasIfConfigured(db, log);
@@ -1545,6 +1887,7 @@ export async function handleClientFallbackApi(
       status: body.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
       created_at: new Date().toISOString(),
     };
+    unmarkEntityDeleted(newUser.id);
     db.USERS.push(newUser);
     const log = appendLocalActivityLog(
       db,
@@ -1575,7 +1918,7 @@ export async function handleClientFallbackApi(
       db,
       currentUser,
       'UPDATE_USER',
-      `Memperbarui hak akses / profil pengguna ${db.USERS[idx].name}`
+      `Memperbarui hak akses / profil pengguna ${db.USERS[idx].name} (${id})`
     );
     saveLocalDb(db);
     const syncRes = await syncLocalDbToGasIfConfigured(db, log);
@@ -1603,16 +1946,6 @@ export async function handleClientFallbackApi(
     };
     saveLocalGasConfig(nextCfg);
 
-    const log = appendLocalActivityLog(
-      db,
-      currentUser,
-      'CONFIGURE_DATABASE',
-      cleanUrl
-        ? 'Menghubungkan & menyinkronkan aplikasi ke Google Apps Script Web App'
-        : 'Mengaktifkan mode penyimpanan lokal'
-    );
-    saveLocalDb(db);
-
     let autoSyncRes: {
       synced: boolean;
       error?: string;
@@ -1620,10 +1953,32 @@ export async function handleClientFallbackApi(
     } = { synced: false };
 
     if (nextCfg.webAppUrl) {
+      // First pull & reconcile any existing data in Google Sheets (e.g. from HP) with unsynced local data (e.g. on PC)
+      try {
+        await pullFromGasDirectToLocalDb();
+        db = loadLocalDb();
+      } catch {
+        // proceed with initial push if sheet is brand new
+      }
+      const log = appendLocalActivityLog(
+        db,
+        currentUser,
+        'CONFIGURE_DATABASE',
+        'Menghubungkan & menyinkronkan data perangkat ini dengan Google Sheets'
+      );
+      saveLocalDb(db);
       autoSyncRes = await syncLocalDbToGasIfConfigured(db, log);
       if (!autoSyncRes.synced && autoSyncRes.error) {
         throw new Error(autoSyncRes.error);
       }
+    } else {
+      appendLocalActivityLog(
+        db,
+        currentUser,
+        'CONFIGURE_DATABASE',
+        'Mengaktifkan mode penyimpanan lokal'
+      );
+      saveLocalDb(db);
     }
 
     const refreshed = loadLocalGasConfig();
@@ -1639,9 +1994,10 @@ export async function handleClientFallbackApi(
         gas_url_masked: refreshed.webAppUrl
           ? `${refreshed.webAppUrl.slice(0, 42)}...`
           : '',
+        gas_url: refreshed.webAppUrl || undefined,
         last_sync: refreshed.lastSync,
         message: refreshed.webAppUrl
-          ? 'Terhubung & Tersinkronisasi Otomatis ke Google Sheets (Google Apps Script)'
+          ? 'Terhubung & Tersinkronisasi Otomatis ke Google Sheets (HP & PC)'
           : 'Database Persisten Aktif (Siap disinkronkan ke Google Sheets)',
       },
     };
@@ -1670,11 +2026,18 @@ export async function handleClientFallbackApi(
     if (!cfg.webAppUrl) {
       throw new Error('URL Web App Google Apps Script belum dikonfigurasi.');
     }
+    // Reconcile first so we merge remote records instead of overwriting another device's additions
+    try {
+      await pullFromGasDirectToLocalDb();
+      db = loadLocalDb();
+    } catch {
+      // ignore if first push
+    }
     const log = appendLocalActivityLog(
       db,
       currentUser,
       'SYNC_DATABASE',
-      'Sinkronisasi seluruh 8 sheet ke Google Sheets (AUTOSMART_INVOICE_DATABASE) berhasil'
+      'Sinkronisasi seluruh 8 sheet antar perangkat ke Google Sheets berhasil'
     );
     saveLocalDb(db);
     const syncRes = await syncLocalDbToGasIfConfigured(db, log);

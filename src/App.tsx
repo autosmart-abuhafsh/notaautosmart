@@ -32,10 +32,13 @@ import {
   handleClientFallbackApi,
   loadLocalDb,
   loadLocalGasConfig,
+  markEntityDeleted,
   mirrorBootstrapToLocalDb,
+  pullFromGasDirectToLocalDb,
   saveLocalDb,
   saveLocalGasConfig,
   syncLocalDbToGasIfConfigured,
+  validateGasWebAppUrl,
 } from './utils/clientFallbackEngine';
 import { parseServiceCategories } from './utils/invoiceLogic';
 
@@ -92,6 +95,7 @@ export default function App() {
   );
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
 
   // Core Application State
   const [clients, setClients] = useState<Client[]>([]);
@@ -134,6 +138,67 @@ export default function App() {
     },
     []
   );
+
+  // Adopt ?gas_url=... magic sync link automatically on any device (HP or PC)
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const urlParam = (params.get('gas_url') || '').trim();
+      const secretParam = (params.get('gas_secret') || '').trim();
+      if (urlParam && validateGasWebAppUrl(urlParam) === null) {
+        const currentCfg = loadLocalGasConfig();
+        saveLocalGasConfig({
+          webAppUrl: urlParam,
+          apiSecret: secretParam || currentCfg.apiSecret,
+          lastSync: currentCfg.lastSync,
+        });
+        params.delete('gas_url');
+        params.delete('gas_secret');
+        const nextQuery = params.toString();
+        const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash}`;
+        window.history.replaceState({}, '', nextUrl);
+        showToast(
+          'Perangkat ini otomatis terhubung ke Google Sheets! Menyinkronkan data HP & PC...'
+        );
+      }
+    } catch {
+      // ignore URL parse issues
+    }
+  }, [showToast]);
+
+  const applyLocalDbToReactState = useCallback(() => {
+    const db = loadLocalDb();
+    const gasCfg = loadLocalGasConfig();
+    const hydratedInvoices: Invoice[] = db.INVOICES.map((inv) => ({
+      ...inv,
+      items: db.INVOICE_ITEMS.filter((it) => it.invoice_id === inv.id),
+      client: db.CLIENTS.find((c) => c.id === inv.client_id),
+    }));
+    const settingsMap: CompanySettingsMap = {
+      ...DEFAULT_SETTINGS,
+      ...db.SETTINGS,
+    };
+    setClients([...db.CLIENTS]);
+    setServices([...db.SERVICES]);
+    setInvoices(hydratedInvoices);
+    setPayments([...db.PAYMENTS]);
+    setSettings(settingsMap);
+    setUsers([...db.USERS]);
+    setActivityLogs([...db.ACTIVITY_LOGS]);
+    if (gasCfg.webAppUrl) {
+      setDatabaseStatus({
+        mode: 'GOOGLE_SHEETS',
+        connected: true,
+        spreadsheet_name: 'AUTOSMART_INVOICE_DATABASE',
+        gas_url_configured: true,
+        gas_url: gasCfg.webAppUrl,
+        gas_url_masked: `${gasCfg.webAppUrl.slice(0, 42)}...`,
+        last_sync: gasCfg.lastSync,
+        message:
+          'Terhubung & tersinkronisasi 2 arah ke Google Sheets (HP & PC Sinkron)',
+      });
+    }
+  }, []);
 
   const apiRequest = useCallback(
     async (url: string, options: RequestInit = {}) => {
@@ -185,6 +250,60 @@ export default function App() {
     [token]
   );
 
+  const syncWithGoogleSheetsNow = useCallback(
+    async (silent: boolean = false) => {
+      const gasCfg = loadLocalGasConfig();
+      if (!gasCfg.webAppUrl) return;
+      if (!silent) setIsSyncingCloud(true);
+      try {
+        const boot = (await apiRequest('/api/bootstrap?sync=1')) as {
+          clients?: Client[];
+          services?: ServiceItem[];
+          invoices?: Invoice[];
+          payments?: Payment[];
+          settings?: CompanySettingsMap;
+          users?: User[];
+          activityLogs?: ActivityLog[];
+          databaseStatus?: DatabaseStatus;
+        };
+        const mirrored = mirrorBootstrapToLocalDb(boot);
+        setClients(mirrored.mergedDb.CLIENTS);
+        setServices(mirrored.mergedDb.SERVICES);
+        setInvoices(mirrored.mergedDb.INVOICES);
+        setPayments(mirrored.mergedDb.PAYMENTS);
+        setSettings({ ...DEFAULT_SETTINGS, ...mirrored.mergedSettings });
+        setUsers(mirrored.mergedDb.USERS);
+        setActivityLogs(mirrored.mergedDb.ACTIVITY_LOGS);
+        if (boot.databaseStatus) {
+          setDatabaseStatus(boot.databaseStatus);
+        }
+
+        if (mirrored.localHadMoreData) {
+          await apiRequest('/api/database/sync', {
+            method: 'POST',
+            body: JSON.stringify({ localDb: mirrored.mergedDb }),
+          }).catch(() => {});
+        }
+
+        if (!silent) {
+          showToast(
+            'Data berhasil disinkronkan 2 arah dengan Google Sheets (HP & PC Sinkron).'
+          );
+        }
+      } catch (err) {
+        if (!silent) {
+          showToast(
+            `Gagal sinkronisasi: ${err instanceof Error ? err.message : String(err)}`,
+            'error'
+          );
+        }
+      } finally {
+        if (!silent) setIsSyncingCloud(false);
+      }
+    },
+    [apiRequest, showToast]
+  );
+
   const loadBootstrapData = useCallback(async () => {
     if (!token) return;
     setLoadingBootstrap(true);
@@ -229,6 +348,7 @@ export default function App() {
             connected: true,
             spreadsheet_name: 'AUTOSMART_INVOICE_DATABASE',
             gas_url_configured: true,
+            gas_url: localGasCfg.webAppUrl,
             gas_url_masked: `${localGasCfg.webAppUrl.slice(0, 42)}...`,
             last_sync: localGasCfg.lastSync || boot.databaseStatus.last_sync,
             message:
@@ -239,10 +359,17 @@ export default function App() {
         }
       }
 
-      // If Vercel serverless cold-started and local browser had richer data, sync local -> GAS immediately
-      if (mirrored.localHadMoreData && localGasCfg.webAppUrl) {
-        syncLocalDbToGasIfConfigured(mirrored.mergedDb).catch(() => {
-          // ignore background sync warning on bootstrap
+      // Release initial loading screen immediately so UI is responsive
+      setLoadingBootstrap(false);
+
+      // If this device had unsynced local additions (e.g. SRV-0015 & SRV-0016 on PC or CLT-0001 on HP), push merged state to GAS in background
+      const activeGasCfg = loadLocalGasConfig();
+      if (mirrored.localHadMoreData && activeGasCfg.webAppUrl) {
+        void apiRequest('/api/database/sync', {
+          method: 'POST',
+          body: JSON.stringify({ localDb: mirrored.mergedDb }),
+        }).catch(() => {
+          void syncLocalDbToGasIfConfigured(mirrored.mergedDb);
         });
       }
     } catch {
@@ -260,10 +387,44 @@ export default function App() {
     }
   }, [token, loadBootstrapData]);
 
+  // Continuous background 2-way sync across HP & PC (on tab focus, visibilitychange, and 15s polling)
+  useEffect(() => {
+    if (!token) return;
+
+    const handleFocusOrVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void syncWithGoogleSheetsNow(true);
+      }
+    };
+
+    window.addEventListener('focus', handleFocusOrVisibility);
+    document.addEventListener('visibilitychange', handleFocusOrVisibility);
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void syncWithGoogleSheetsNow(true);
+      }
+    }, 15000);
+
+    return () => {
+      window.removeEventListener('focus', handleFocusOrVisibility);
+      document.removeEventListener('visibilitychange', handleFocusOrVisibility);
+      window.clearInterval(intervalId);
+    };
+  }, [token, syncWithGoogleSheetsNow]);
+
+  const handleSelectTab = useCallback(
+    (nextTab: NavTab) => {
+      setActiveTab(nextTab);
+      void syncWithGoogleSheetsNow(true);
+    },
+    [syncWithGoogleSheetsNow]
+  );
+
   /**
    * Ensures every mutation in the application:
    * 1. Is recorded in ACTIVITY_LOGS (both local and state)
-   * 2. Is pushed to Google Apps Script if a GAS Web App URL is configured and the server didn't already confirm `gasSynced: true`
+   * 2. Is pushed to Google Apps Script if a GAS Web App URL is configured
    */
   const ensureGasSyncAfterMutation = useCallback(
     async (
@@ -294,12 +455,21 @@ export default function App() {
         return { gasSynced: false };
       }
 
-      // If the backend already synced to GAS without error, update timestamp
       if (serverRes?.gasSynced) {
+        setDatabaseStatus((prev) => ({
+          ...prev,
+          mode: 'GOOGLE_SHEETS',
+          connected: true,
+          gas_url_configured: true,
+          gas_url: localGas.webAppUrl,
+          last_sync: new Date().toISOString(),
+          message:
+            'Terhubung & tersinkronisasi 2 arah ke Google Sheets (Semua 8 Sheet & Activity Log)',
+        }));
         return { gasSynced: true };
       }
 
-      // Otherwise, perform direct browser -> Google Apps Script sync (crucial for github.io and Vercel cold-start instances)
+      // Direct fallback for static hosting (github.io) or cold-start instances
       const directSync = await syncLocalDbToGasIfConfigured(localDb, latestLog);
       if (directSync.synced) {
         setDatabaseStatus((prev) => ({
@@ -307,9 +477,10 @@ export default function App() {
           mode: 'GOOGLE_SHEETS',
           connected: true,
           gas_url_configured: true,
+          gas_url: localGas.webAppUrl,
           last_sync: new Date().toISOString(),
           message:
-            'Terhubung & tersinkronisasi otomatis ke Google Sheets (Semua 8 Sheet & Activity Log)',
+            'Terhubung & tersinkronisasi 2 arah ke Google Sheets (Semua 8 Sheet & Activity Log)',
         }));
         return { gasSynced: true };
       }
@@ -394,6 +565,7 @@ export default function App() {
   };
 
   const handleDeleteClient = async (id: string) => {
+    markEntityDeleted(id);
     const res = (await apiRequest(`/api/clients/${id}`, {
       method: 'DELETE',
     })) as { gasSynced?: boolean; gasError?: string };
@@ -447,6 +619,7 @@ export default function App() {
   };
 
   const handleDeleteService = async (id: string) => {
+    markEntityDeleted(id);
     const res = (await apiRequest(`/api/services/${id}`, {
       method: 'DELETE',
     })) as { gasSynced?: boolean; gasError?: string };
@@ -602,6 +775,7 @@ export default function App() {
   };
 
   const handleDeleteInvoice = async (id: string) => {
+    markEntityDeleted(id);
     const res = (await apiRequest(`/api/invoices/${id}`, {
       method: 'DELETE',
     })) as { gasSynced?: boolean; gasError?: string };
@@ -661,6 +835,7 @@ export default function App() {
   };
 
   const handleDeletePayment = async (id: string) => {
+    markEntityDeleted(id);
     const res = (await apiRequest(`/api/payments/${id}`, {
       method: 'DELETE',
     })) as { gasSynced?: boolean; gasError?: string };
@@ -768,18 +943,21 @@ export default function App() {
   };
 
   const handleTriggerDatabaseSync = async () => {
+    await pullFromGasDirectToLocalDb();
     await apiRequest('/api/database/sync', { method: 'POST' });
+    await syncLocalDbToGasIfConfigured(loadLocalDb());
     await loadBootstrapData();
     showToast(
-      'Sinkronisasi (Push) seluruh data & log aktivitas ke Google Sheets berhasil.'
+      'Sinkronisasi 2 arah (Merge & Push) seluruh data & log aktivitas ke Google Sheets berhasil.'
     );
   };
 
   const handlePullDatabaseFromGas = async () => {
+    await pullFromGasDirectToLocalDb();
     await apiRequest('/api/database/pull', { method: 'POST' });
     await loadBootstrapData();
     showToast(
-      'Data nota, invoice, pembayaran, pelanggan, dan log berhasil ditarik dari Google Sheets.'
+      'Data nota, invoice, pembayaran, pelanggan, layanan, dan log terbaru berhasil ditarik dari Google Sheets.'
     );
   };
 
@@ -816,7 +994,7 @@ export default function App() {
       {/* Sidebar Navigation */}
       <Sidebar
         activeTab={activeTab}
-        onSelectTab={setActiveTab}
+        onSelectTab={handleSelectTab}
         currentUser={currentUser}
         settings={settings}
         databaseStatus={databaseStatus}
@@ -830,17 +1008,21 @@ export default function App() {
         <Header
           activeTab={activeTab}
           currentUser={currentUser}
+          databaseStatus={databaseStatus}
+          isSyncingCloud={isSyncingCloud}
           onOpenMobileMenu={() => setMobileMenuOpen(true)}
+          onQuickSyncCloud={() => void syncWithGoogleSheetsNow(false)}
+          onOpenDatabaseTab={() => handleSelectTab('database')}
           onQuickCreateInvoice={() => {
             setTriggerCreateInvoice(true);
-            setActiveTab('invoices');
+            handleSelectTab('invoices');
           }}
           onQuickRecordPayment={() => {
             const firstUnpaid = invoices.find(
               (i) => i.balance > 0 && i.status !== 'Cancelled'
             );
             setPreselectedPaymentInvoice(firstUnpaid || invoices[0] || null);
-            setActiveTab('payments');
+            handleSelectTab('payments');
           }}
         />
 

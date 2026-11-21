@@ -321,6 +321,7 @@ function buildDatabaseStatusObject(cfg: GasConfig) {
     connected: Boolean(cfg.webAppUrl),
     spreadsheet_name: 'AUTOSMART_INVOICE_DATABASE',
     gas_url_configured: Boolean(cfg.webAppUrl),
+    gas_url: cfg.webAppUrl || undefined,
     gas_url_masked: cfg.webAppUrl ? `${cfg.webAppUrl.slice(0, 42)}...` : '',
     last_sync: cfg.lastSync,
     message: cfg.webAppUrl
@@ -665,21 +666,33 @@ function saveSessions(sessions: Record<string, SessionRecord>): void {
 }
 
 // --- Sync Helper with Google Apps Script Web App ---
-let hasHydratedColdStartFromGas = false;
+let lastGasHydrateAt = 0;
 
-async function hydrateFromGasOnColdStartIfNeeded(): Promise<void> {
-  if (hasHydratedColdStartFromGas) return;
-  const cfg = loadGasConfig();
-  if (!cfg.webAppUrl) return;
-
-  const currentDb = readDb();
-  // Only auto-hydrate on cold start if local/tmp DB has no clients and no invoices
-  if (currentDb.CLIENTS.length > 0 || currentDb.INVOICES.length > 0) {
-    hasHydratedColdStartFromGas = true;
-    return;
+function extractServerDeletedIdsFromLogs(logs: DbActivityLog[]): Set<string> {
+  const deleted = new Set<string>();
+  const idRegex = /\b((?:CLT|SRV|INV|PAY|USR)-\d+)\b/g;
+  for (const log of logs) {
+    if (String(log.activity || '').toUpperCase().startsWith('DELETE_')) {
+      const desc = String(log.description || '');
+      let match: RegExpExecArray | null;
+      while ((match = idRegex.exec(desc)) !== null) {
+        deleted.add(match[1]);
+      }
+    }
   }
+  return deleted;
+}
 
-  hasHydratedColdStartFromGas = true;
+async function hydrateFromGasIfNeeded(force: boolean = false): Promise<boolean> {
+  const cfg = loadGasConfig();
+  if (!cfg.webAppUrl) return false;
+
+  const nowMs = Date.now();
+  if (!force && nowMs - lastGasHydrateAt < 1500) {
+    return false;
+  }
+  lastGasHydrateAt = nowMs;
+
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12000);
@@ -695,20 +708,44 @@ async function hydrateFromGasOnColdStartIfNeeded(): Promise<void> {
       signal: controller.signal,
     });
     clearTimeout(timeout);
-    if (!gasRes.ok) return;
+    if (!gasRes.ok) return false;
     const rawText = await gasRes.text();
-    if (rawText.trim().startsWith('<')) return;
+    if (rawText.trim().startsWith('<')) return false;
     const payload = JSON.parse(rawText) as {
       ok?: boolean;
       data?: Partial<Record<keyof AutosmartDatabase, Array<Record<string, unknown>>>>;
     };
-    if (!payload?.ok || !payload.data) return;
+    if (!payload?.ok || !payload.data) return false;
 
     const remote = payload.data;
+    const currentDb = readDb();
+
+    const remoteLogs: DbActivityLog[] = Array.isArray(remote.ACTIVITY_LOGS)
+      ? remote.ACTIVITY_LOGS.map((l, idx) => ({
+          id: String(l.id || `LOG-R-${idx + 1}`),
+          user_id: String(l.user_id || 'USR-0001'),
+          activity: String(l.activity || 'ACTIVITY'),
+          description: String(l.description || ''),
+          timestamp: String(l.timestamp || getJakartaTimestamp()),
+        }))
+      : [];
+
+    const deletedIds = extractServerDeletedIdsFromLogs([
+      ...remoteLogs,
+      ...currentDb.ACTIVITY_LOGS,
+    ]);
+
+    const remoteIsFreshEmptySheet =
+      !cfg.lastSync &&
+      remoteLogs.length === 0 &&
+      (!Array.isArray(remote.CLIENTS) || remote.CLIENTS.length === 0) &&
+      (!Array.isArray(remote.INVOICES) || remote.INVOICES.length === 0) &&
+      (!Array.isArray(remote.SERVICES) || remote.SERVICES.length <= 16);
+
     let changed = false;
 
-    if (Array.isArray(remote.CLIENTS) && remote.CLIENTS.length > 0) {
-      currentDb.CLIENTS = remote.CLIENTS.map((c) => ({
+    if (Array.isArray(remote.CLIENTS)) {
+      const mappedClients: DbClient[] = remote.CLIENTS.map((c) => ({
         id: String(c.id || ''),
         client_name: String(c.client_name || ''),
         contact_person: String(c.contact_person || ''),
@@ -718,26 +755,50 @@ async function hydrateFromGasOnColdStartIfNeeded(): Promise<void> {
         address: String(c.address || ''),
         notes: String(c.notes || ''),
         created_at: String(c.created_at || getJakartaTimestamp()),
-      }));
+      })).filter((c) => c.id && !deletedIds.has(c.id));
+
+      if (remoteIsFreshEmptySheet && currentDb.CLIENTS.length > 0) {
+        const remoteIds = new Set(mappedClients.map((c) => c.id));
+        for (const localClient of currentDb.CLIENTS) {
+          if (!remoteIds.has(localClient.id) && !deletedIds.has(localClient.id)) {
+            mappedClients.push(localClient);
+          }
+        }
+      }
+      currentDb.CLIENTS = mappedClients;
       changed = true;
     }
 
     if (Array.isArray(remote.SERVICES) && remote.SERVICES.length > 0) {
-      currentDb.SERVICES = remote.SERVICES.map((s) => ({
+      const mappedServices: DbService[] = remote.SERVICES.map((s) => ({
         id: String(s.id || ''),
         service_name: String(s.service_name || ''),
         category: String(s.category || 'Layanan Digital Lainnya'),
         description: String(s.description || ''),
         unit: String(s.unit || 'Paket'),
         price: Math.round(Number(s.price) || 0),
-        status: s.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
+        status: (s.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif') as DbService['status'],
         created_at: String(s.created_at || getJakartaTimestamp()),
-      }));
+      })).filter((s) => s.id && !deletedIds.has(s.id));
+
+      if (remoteIsFreshEmptySheet && currentDb.SERVICES.length > 0) {
+        const remoteIds = new Set(mappedServices.map((s) => s.id));
+        for (const localSrv of currentDb.SERVICES) {
+          const num = parseInt(localSrv.id.replace(/\D/g, ''), 10);
+          const isCustom =
+            (!Number.isNaN(num) && num > 16) ||
+            localSrv.created_at !== '2026-01-10T08:00:00.000Z';
+          if (isCustom && !remoteIds.has(localSrv.id) && !deletedIds.has(localSrv.id)) {
+            mappedServices.unshift(localSrv);
+          }
+        }
+      }
+      currentDb.SERVICES = mappedServices;
       changed = true;
     }
 
-    if (Array.isArray(remote.INVOICES) && remote.INVOICES.length > 0) {
-      currentDb.INVOICES = remote.INVOICES.map((inv) => ({
+    if (Array.isArray(remote.INVOICES)) {
+      const mappedInvoices: DbInvoice[] = remote.INVOICES.map((inv) => ({
         id: String(inv.id || ''),
         invoice_number: String(inv.invoice_number || ''),
         client_id: String(inv.client_id || ''),
@@ -755,12 +816,23 @@ async function hydrateFromGasOnColdStartIfNeeded(): Promise<void> {
         notes: String(inv.notes || ''),
         created_at: String(inv.created_at || getJakartaTimestamp()),
         updated_at: String(inv.updated_at || getJakartaTimestamp()),
-      }));
+      })).filter((inv) => inv.id && !deletedIds.has(inv.id));
+
+      if (remoteIsFreshEmptySheet && currentDb.INVOICES.length > 0) {
+        const remoteIds = new Set(mappedInvoices.map((i) => i.id));
+        for (const localInv of currentDb.INVOICES) {
+          if (!remoteIds.has(localInv.id) && !deletedIds.has(localInv.id)) {
+            mappedInvoices.push(localInv);
+          }
+        }
+      }
+      currentDb.INVOICES = mappedInvoices;
       changed = true;
     }
 
-    if (Array.isArray(remote.INVOICE_ITEMS) && remote.INVOICE_ITEMS.length > 0) {
-      currentDb.INVOICE_ITEMS = remote.INVOICE_ITEMS.map((it) => ({
+    if (Array.isArray(remote.INVOICE_ITEMS)) {
+      const activeInvIds = new Set(currentDb.INVOICES.map((i) => i.id));
+      const mappedItems: DbInvoiceItem[] = remote.INVOICE_ITEMS.map((it) => ({
         id: String(it.id || ''),
         invoice_id: String(it.invoice_id || ''),
         service_id: String(it.service_id || ''),
@@ -770,12 +842,26 @@ async function hydrateFromGasOnColdStartIfNeeded(): Promise<void> {
         unit_price: Math.round(Number(it.unit_price) || 0),
         discount: Math.round(Number(it.discount) || 0),
         total: Math.round(Number(it.total) || 0),
-      }));
+      })).filter((it) => it.id && activeInvIds.has(it.invoice_id));
+
+      if (remoteIsFreshEmptySheet && currentDb.INVOICE_ITEMS.length > 0) {
+        const remoteItemIds = new Set(mappedItems.map((it) => it.id));
+        for (const localIt of currentDb.INVOICE_ITEMS) {
+          if (
+            !remoteItemIds.has(localIt.id) &&
+            activeInvIds.has(localIt.invoice_id)
+          ) {
+            mappedItems.push(localIt);
+          }
+        }
+      }
+      currentDb.INVOICE_ITEMS = mappedItems;
       changed = true;
     }
 
-    if (Array.isArray(remote.PAYMENTS) && remote.PAYMENTS.length > 0) {
-      currentDb.PAYMENTS = remote.PAYMENTS.map((p) => ({
+    if (Array.isArray(remote.PAYMENTS)) {
+      const activeInvIds = new Set(currentDb.INVOICES.map((i) => i.id));
+      const mappedPayments: DbPayment[] = remote.PAYMENTS.map((p) => ({
         id: String(p.id || ''),
         receipt_number: String(p.receipt_number || ''),
         invoice_id: String(p.invoice_id || ''),
@@ -786,26 +872,79 @@ async function hydrateFromGasOnColdStartIfNeeded(): Promise<void> {
         reference_number: String(p.reference_number || ''),
         notes: String(p.notes || ''),
         created_at: String(p.created_at || getJakartaTimestamp()),
-      }));
+      })).filter(
+        (p) => p.id && !deletedIds.has(p.id) && activeInvIds.has(p.invoice_id)
+      );
+
+      if (remoteIsFreshEmptySheet && currentDb.PAYMENTS.length > 0) {
+        const remotePayIds = new Set(mappedPayments.map((p) => p.id));
+        for (const localPay of currentDb.PAYMENTS) {
+          if (
+            !remotePayIds.has(localPay.id) &&
+            !deletedIds.has(localPay.id) &&
+            activeInvIds.has(localPay.invoice_id)
+          ) {
+            mappedPayments.push(localPay);
+          }
+        }
+      }
+      currentDb.PAYMENTS = mappedPayments;
       changed = true;
     }
 
-    if (Array.isArray(remote.ACTIVITY_LOGS) && remote.ACTIVITY_LOGS.length > 0) {
-      currentDb.ACTIVITY_LOGS = remote.ACTIVITY_LOGS.map((l, idx) => ({
-        id: String(l.id || `LOG-R-${idx + 1}`),
-        user_id: String(l.user_id || 'USR-0001'),
-        activity: String(l.activity || 'ACTIVITY'),
-        description: String(l.description || ''),
-        timestamp: String(l.timestamp || getJakartaTimestamp()),
-      }));
+    if (Array.isArray(remote.COMPANY_SETTINGS) && remote.COMPANY_SETTINGS.length > 0) {
+      const remoteSettingsMap = new Map<string, string>();
+      for (const s of remote.COMPANY_SETTINGS) {
+        const k = String(s.setting_key || '');
+        const v = String(s.setting_value ?? '');
+        if (k && v.trim()) {
+          remoteSettingsMap.set(k, v);
+        }
+      }
+      if (remoteSettingsMap.size > 0) {
+        const now = getJakartaTimestamp();
+        for (const [k, v] of remoteSettingsMap.entries()) {
+          const idx = currentDb.COMPANY_SETTINGS.findIndex(
+            (row) => row.setting_key === k
+          );
+          if (idx >= 0) {
+            currentDb.COMPANY_SETTINGS[idx].setting_value = v;
+          } else {
+            currentDb.COMPANY_SETTINGS.push({
+              id: `SET-${String(currentDb.COMPANY_SETTINGS.length + 1).padStart(3, '0')}`,
+              setting_key: k,
+              setting_value: v,
+              updated_at: now,
+            });
+          }
+        }
+        ensureOfficialSettingsHydrated(currentDb);
+        changed = true;
+      }
+    }
+
+    if (remoteLogs.length > 0) {
+      const seenLogIds = new Set<string>();
+      const combinedLogs: DbActivityLog[] = [];
+      for (const l of [...remoteLogs, ...currentDb.ACTIVITY_LOGS]) {
+        if (l && l.id && !seenLogIds.has(l.id)) {
+          seenLogIds.add(l.id);
+          combinedLogs.push(l);
+        }
+      }
+      combinedLogs.sort((a, b) =>
+        String(b.timestamp || '').localeCompare(String(a.timestamp || ''))
+      );
+      currentDb.ACTIVITY_LOGS = combinedLogs.slice(0, 300);
       changed = true;
     }
 
     if (changed) {
       writeDb(currentDb);
     }
+    return changed;
   } catch {
-    // ignore cold-start hydration network errors
+    return false;
   }
 }
 
@@ -1023,7 +1162,8 @@ app.post('/api/auth/login', async (req, res) => {
 
   // --- BOOTSTRAP / FULL STATE ENDPOINT ---
   app.get('/api/bootstrap', requireAuth, async (req, res) => {
-    await hydrateFromGasOnColdStartIfNeeded();
+    const forceSync = req.query.sync === '1';
+    await hydrateFromGasIfNeeded(forceSync);
     const db = readDb();
     const cfg = loadGasConfig();
     const user = (req as express.Request & { user: DbUser }).user;
@@ -1069,7 +1209,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const result = await withLock(async () => {
-      await hydrateFromGasOnColdStartIfNeeded();
+      await hydrateFromGasIfNeeded(true);
       const db = readDb();
       const newClient: DbClient = {
         id: generateEntityId(
@@ -1114,7 +1254,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const result = await withLock(async () => {
-      await hydrateFromGasOnColdStartIfNeeded();
+      await hydrateFromGasIfNeeded(true);
       const db = readDb();
       const idx = db.CLIENTS.findIndex((c) => c.id === id);
       if (idx === -1) return null;
@@ -1156,7 +1296,7 @@ app.post('/api/auth/login', async (req, res) => {
     const { id } = req.params;
 
     const result = await withLock(async () => {
-      await hydrateFromGasOnColdStartIfNeeded();
+      await hydrateFromGasIfNeeded(true);
       const db = readDb();
       const hasInvoices = db.INVOICES.some((inv) => inv.client_id === id);
       if (hasInvoices) {
@@ -1502,6 +1642,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const created = await withLock(async () => {
+      await hydrateFromGasIfNeeded(true);
       const db = readDb();
       const cleanCat =
         sanitizeString(body.category) || 'Layanan Digital Lainnya';
@@ -1530,11 +1671,15 @@ app.post('/api/auth/login', async (req, res) => {
         `Menambahkan layanan ${newService.service_name} (${newService.id})`
       );
       writeDb(db);
-      await syncWithGasIfConfigured(db);
-      return newService;
+      const syncRes = await syncWithGasIfConfigured(db);
+      return { service: newService, syncRes };
     });
 
-    res.status(201).json({ service: created });
+    res.status(201).json({
+      service: created.service,
+      gasSynced: created.syncRes.synced,
+      gasError: created.syncRes.error,
+    });
   });
 
   app.put('/api/services/:id', requireAuth, async (req, res) => {
@@ -1547,6 +1692,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const updated = await withLock(async () => {
+      await hydrateFromGasIfNeeded(true);
       const db = readDb();
       const idx = db.SERVICES.findIndex((s) => s.id === id);
       if (idx === -1) return null;
@@ -1573,15 +1719,19 @@ app.post('/api/auth/login', async (req, res) => {
         `Memperbarui layanan ${db.SERVICES[idx].service_name} (${id})`
       );
       writeDb(db);
-      await syncWithGasIfConfigured(db);
-      return db.SERVICES[idx];
+      const syncRes = await syncWithGasIfConfigured(db);
+      return { service: db.SERVICES[idx], syncRes };
     });
 
     if (!updated) {
       res.status(404).json({ error: 'Layanan tidak ditemukan.' });
       return;
     }
-    res.json({ service: updated });
+    res.json({
+      service: updated.service,
+      gasSynced: updated.syncRes.synced,
+      gasError: updated.syncRes.error,
+    });
   });
 
   app.delete('/api/services/:id', requireAuth, async (req, res) => {
@@ -1589,9 +1739,10 @@ app.post('/api/auth/login', async (req, res) => {
     const { id } = req.params;
 
     const deleted = await withLock(async () => {
+      await hydrateFromGasIfNeeded(true);
       const db = readDb();
       const target = db.SERVICES.find((s) => s.id === id);
-      if (!target) return false;
+      if (!target) return null;
       db.SERVICES = db.SERVICES.filter((s) => s.id !== id);
       logActivity(
         db,
@@ -1600,15 +1751,19 @@ app.post('/api/auth/login', async (req, res) => {
         `Menghapus layanan ${target.service_name} (${id})`
       );
       writeDb(db);
-      await syncWithGasIfConfigured(db);
-      return true;
+      const syncRes = await syncWithGasIfConfigured(db);
+      return syncRes;
     });
 
     if (!deleted) {
       res.status(404).json({ error: 'Layanan tidak ditemukan.' });
       return;
     }
-    res.json({ ok: true });
+    res.json({
+      ok: true,
+      gasSynced: deleted.synced,
+      gasError: deleted.error,
+    });
   });
 
   // --- INVOICES CRUD ---
@@ -1640,6 +1795,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const created = await withLock(async () => {
+      await hydrateFromGasIfNeeded(true);
       const db = readDb();
       const settings = getSettingsMap(db);
       const prefix = settings.invoice_prefix || 'INV/ASM';
@@ -1765,6 +1921,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const updated = await withLock(async () => {
+      await hydrateFromGasIfNeeded(true);
       const db = readDb();
       const idx = db.INVOICES.findIndex((i) => i.id === id);
       if (idx === -1) return null;
@@ -1881,6 +2038,7 @@ app.post('/api/auth/login', async (req, res) => {
     const { id } = req.params;
 
     const deleted = await withLock(async () => {
+      await hydrateFromGasIfNeeded(true);
       const db = readDb();
       const target = db.INVOICES.find((i) => i.id === id);
       if (!target) return false;
@@ -1891,7 +2049,7 @@ app.post('/api/auth/login', async (req, res) => {
         db,
         user.id,
         'DELETE_INVOICE',
-        `Menghapus invoice ${target.invoice_number} beserta item terkait`
+        `Menghapus invoice ${target.invoice_number} (${id}) beserta item terkait`
       );
       writeDb(db);
       await syncWithGasIfConfigured(db);
@@ -1921,6 +2079,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const result = await withLock(async () => {
+      await hydrateFromGasIfNeeded(true);
       const db = readDb();
       const inv = db.INVOICES.find((i) => i.id === body.invoice_id);
       if (!inv) {
@@ -2286,6 +2445,10 @@ app.post('/api/auth/login', async (req, res) => {
       }
       saveGasConfig(cfg);
 
+      if (cleanUrl) {
+        await hydrateFromGasIfNeeded(true);
+      }
+
       const db = readDb();
       logActivity(
         db,
@@ -2436,7 +2599,6 @@ app.post('/api/auth/login', async (req, res) => {
     requireAdmin,
     async (req, res) => {
       const admin = (req as express.Request & { user: DbUser }).user;
-      const db = readDb();
       const cfg = loadGasConfig();
 
       if (!cfg.webAppUrl) {
@@ -2447,11 +2609,94 @@ app.post('/api/auth/login', async (req, res) => {
         return;
       }
 
+      await hydrateFromGasIfNeeded(true);
+      const db = readDb();
+      const clientLocalDb = req.body?.localDb as
+        | Partial<AutosmartDatabase>
+        | undefined;
+
+      if (clientLocalDb) {
+        const deletedIds = extractServerDeletedIdsFromLogs([
+          ...(Array.isArray(db.ACTIVITY_LOGS) ? db.ACTIVITY_LOGS : []),
+          ...(Array.isArray(clientLocalDb.ACTIVITY_LOGS)
+            ? clientLocalDb.ACTIVITY_LOGS
+            : []),
+        ]);
+
+        if (Array.isArray(clientLocalDb.CLIENTS)) {
+          const existingIds = new Set(db.CLIENTS.map((c) => c.id));
+          for (const c of clientLocalDb.CLIENTS) {
+            if (c && c.id && !existingIds.has(c.id) && !deletedIds.has(c.id)) {
+              db.CLIENTS.push(c);
+              existingIds.add(c.id);
+            }
+          }
+        }
+
+        if (Array.isArray(clientLocalDb.SERVICES)) {
+          const existingIds = new Set(db.SERVICES.map((s) => s.id));
+          for (const s of clientLocalDb.SERVICES) {
+            if (s && s.id && !existingIds.has(s.id) && !deletedIds.has(s.id)) {
+              db.SERVICES.unshift(s);
+              existingIds.add(s.id);
+            }
+          }
+        }
+
+        if (Array.isArray(clientLocalDb.INVOICES)) {
+          const existingIds = new Set(db.INVOICES.map((i) => i.id));
+          for (const inv of clientLocalDb.INVOICES) {
+            if (
+              inv &&
+              inv.id &&
+              !existingIds.has(inv.id) &&
+              !deletedIds.has(inv.id)
+            ) {
+              db.INVOICES.push(inv);
+              existingIds.add(inv.id);
+            }
+          }
+        }
+
+        if (Array.isArray(clientLocalDb.INVOICE_ITEMS)) {
+          const activeInvIds = new Set(db.INVOICES.map((i) => i.id));
+          const existingItemIds = new Set(db.INVOICE_ITEMS.map((it) => it.id));
+          for (const it of clientLocalDb.INVOICE_ITEMS) {
+            if (
+              it &&
+              it.id &&
+              !existingItemIds.has(it.id) &&
+              activeInvIds.has(it.invoice_id)
+            ) {
+              db.INVOICE_ITEMS.push(it);
+              existingItemIds.add(it.id);
+            }
+          }
+        }
+
+        if (Array.isArray(clientLocalDb.PAYMENTS)) {
+          const activeInvIds = new Set(db.INVOICES.map((i) => i.id));
+          const existingPayIds = new Set(db.PAYMENTS.map((p) => p.id));
+          for (const p of clientLocalDb.PAYMENTS) {
+            if (
+              p &&
+              p.id &&
+              !existingPayIds.has(p.id) &&
+              !deletedIds.has(p.id) &&
+              activeInvIds.has(p.invoice_id)
+            ) {
+              db.PAYMENTS.push(p);
+              existingPayIds.add(p.id);
+            }
+          }
+        }
+      }
+
       logActivity(
         db,
         admin.id,
         'SYNC_DATABASE',
-        'Sinkronisasi seluruh 8 sheet ke Google Sheets (AUTOSMART_INVOICE_DATABASE) berhasil'
+        'Sinkronisasi 2 arah seluruh 8 sheet ke Google Sheets (AUTOSMART_INVOICE_DATABASE) berhasil'
       );
       writeDb(db);
 
@@ -2537,7 +2782,7 @@ app.post('/api/auth/login', async (req, res) => {
         await withLock(async () => {
           const currentDb = readDb();
 
-          if (Array.isArray(remote.CLIENTS) && remote.CLIENTS.length > 0) {
+          if (Array.isArray(remote.CLIENTS)) {
             currentDb.CLIENTS = remote.CLIENTS.map((c) => ({
               id: String(c.id || ''),
               client_name: String(c.client_name || ''),
@@ -2564,7 +2809,7 @@ app.post('/api/auth/login', async (req, res) => {
             }));
           }
 
-          if (Array.isArray(remote.INVOICES) && remote.INVOICES.length > 0) {
+          if (Array.isArray(remote.INVOICES)) {
             currentDb.INVOICES = remote.INVOICES.map((inv) => ({
               id: String(inv.id || ''),
               invoice_number: String(inv.invoice_number || ''),
@@ -2586,10 +2831,7 @@ app.post('/api/auth/login', async (req, res) => {
             }));
           }
 
-          if (
-            Array.isArray(remote.INVOICE_ITEMS) &&
-            remote.INVOICE_ITEMS.length > 0
-          ) {
+          if (Array.isArray(remote.INVOICE_ITEMS)) {
             currentDb.INVOICE_ITEMS = remote.INVOICE_ITEMS.map((it) => ({
               id: String(it.id || ''),
               invoice_id: String(it.invoice_id || ''),
@@ -2631,6 +2873,7 @@ app.post('/api/auth/login', async (req, res) => {
                 updated_at: String(s.updated_at || getJakartaTimestamp()),
               })
             );
+            ensureOfficialSettingsHydrated(currentDb);
           }
 
           logActivity(

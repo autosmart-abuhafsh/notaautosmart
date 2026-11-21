@@ -202,13 +202,16 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
   const [copiedScript, setCopiedScript] = useState<'setup' | 'code' | null>(
     null
   );
+  const [copiedMagicLink, setCopiedMagicLink] = useState(false);
 
   useEffect(() => {
     const cfg = loadLocalGasConfig();
     if (cfg.webAppUrl && !gasUrl) {
       setGasUrl(cfg.webAppUrl);
+    } else if (databaseStatus.gas_url && !gasUrl) {
+      setGasUrl(databaseStatus.gas_url);
     }
-  }, [databaseStatus.gas_url_configured, gasUrl]);
+  }, [databaseStatus.gas_url_configured, databaseStatus.gas_url, gasUrl]);
 
   const setField = (key: keyof CompanySettingsMap, val: string) => {
     setFormState((prev) => ({ ...prev, [key]: val }));
@@ -718,15 +721,71 @@ export const CompanySettingsView: React.FC<CompanySettingsViewProps> = ({
                 )}
               </div>
 
+              {(gasUrl.trim() ||
+                databaseStatus.gas_url ||
+                loadLocalGasConfig().webAppUrl) && (
+                <div className="mt-4 p-3.5 rounded-xl bg-[#101B35]/5 border border-[#101B35]/15 space-y-2">
+                  <div className="text-xs font-bold text-[#101B35] flex items-center justify-between gap-2">
+                    <span>Sinkronkan Perangkat Lain (HP ↔ PC / Laptop)</span>
+                    <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-semibold">
+                      1-KLIK SINKRON
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    Agar data di <strong>HP</strong> dan <strong>PC / Laptop</strong> selalu sama persis (saat ditambah atau dihapus langsung sinkron di keduanya), klik tombol di bawah lalu kirim/buka link tersebut di perangkat Anda yang satu lagi:
+                  </p>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const activeUrl =
+                        gasUrl.trim() ||
+                        databaseStatus.gas_url ||
+                        loadLocalGasConfig().webAppUrl;
+                      if (!activeUrl) return;
+                      const magicUrl = `${window.location.origin}${window.location.pathname}?gas_url=${encodeURIComponent(activeUrl)}${
+                        gasSecret.trim()
+                          ? `&gas_secret=${encodeURIComponent(gasSecret.trim())}`
+                          : ''
+                      }`;
+                      try {
+                        await navigator.clipboard.writeText(magicUrl);
+                        setCopiedMagicLink(true);
+                        setTimeout(() => setCopiedMagicLink(false), 3500);
+                      } catch {
+                        // ignore clipboard error
+                      }
+                    }}
+                    className="w-full py-2 px-3 rounded-lg bg-[#101B35] hover:bg-[#1a2b52] text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    {copiedMagicLink ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>
+                          Link Sinkronisasi Tersalin! Buka di HP / PC Anda
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5 text-[#C5A15B]" />
+                        <span>
+                          Salin Link Sinkronisasi Otomatis (Buka di HP / PC)
+                        </span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+
               <div className="mt-5 pt-4 border-t border-slate-200 text-[11px] text-slate-600 space-y-1.5">
                 <div className="font-bold text-[#101B35] flex items-center gap-1.5">
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  <span>Sinkronisasi Otomatis Langsung ke 8 Sheet & Log</span>
+                  <span>Sinkronisasi 2 Arah Otomatis (Tambah, Edit & Hapus)</span>
                 </div>
                 <p>
-                  Setiap penambahan/perubahan Pelanggan, Katalog Layanan,
-                  Invoice, Kwitansi, Pengaturan, maupun Akun Pengguna langsung
-                  dikirim otomatis ke Google Sheets Anda beserta baris baru di{' '}
+                  Setiap penambahan, perubahan, maupun penghapusan Pelanggan,
+                  Katalog Layanan, Invoice, Kwitansi, Pengaturan, dan Akun
+                  Pengguna langsung tersinkronisasi 2 arah antara HP, PC, dan 8
+                  Sheet Google Sheets beserta{' '}
                   <code className="font-mono text-[#800020]">
                     ACTIVITY_LOGS
                   </code>

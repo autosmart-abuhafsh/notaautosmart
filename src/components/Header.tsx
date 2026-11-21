@@ -1,14 +1,18 @@
 import React from 'react';
-import { Menu, Plus, CreditCard } from 'lucide-react';
+import { Menu, Plus, CreditCard, RefreshCw, Database } from 'lucide-react';
 import type { NavTab } from './Sidebar';
-import type { User } from '../types/invoice';
+import type { DatabaseStatus, User } from '../types/invoice';
 
 interface HeaderProps {
   activeTab: NavTab;
   currentUser: User;
+  databaseStatus?: DatabaseStatus;
+  isSyncingCloud?: boolean;
   onOpenMobileMenu: () => void;
   onQuickCreateInvoice: () => void;
   onQuickRecordPayment: () => void;
+  onQuickSyncCloud?: () => void;
+  onOpenDatabaseTab?: () => void;
 }
 
 const TAB_TITLES: Record<NavTab, string> = {
@@ -36,10 +40,18 @@ const MOBILE_TAB_TITLES: Record<NavTab, string> = {
 export const Header: React.FC<HeaderProps> = ({
   activeTab,
   currentUser,
+  databaseStatus,
+  isSyncingCloud = false,
   onOpenMobileMenu,
   onQuickCreateInvoice,
   onQuickRecordPayment,
+  onQuickSyncCloud,
+  onOpenDatabaseTab,
 }) => {
+  const isCloudConnected = Boolean(
+    databaseStatus?.connected || databaseStatus?.gas_url_configured
+  );
+
   return (
     <header className="sticky top-0 z-30 bg-white border-b border-slate-200 px-3.5 sm:px-6 lg:px-8 py-2.5 sm:py-3.5 flex items-center justify-between gap-2 sm:gap-4">
       <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
@@ -68,6 +80,38 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+        {isCloudConnected && onQuickSyncCloud ? (
+          <button
+            type="button"
+            disabled={isSyncingCloud}
+            onClick={onQuickSyncCloud}
+            className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-2 rounded-lg text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-colors cursor-pointer whitespace-nowrap disabled:opacity-60"
+            title="Sinkronkan Data HP & PC Sekarang (Google Sheets)"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 text-emerald-700 shrink-0 ${
+                isSyncingCloud ? 'animate-spin' : ''
+              }`}
+            />
+            <span className="hidden xl:inline">
+              {isSyncingCloud ? 'Menyinkronkan...' : 'Sinkron HP & PC'}
+            </span>
+            <span className="xl:hidden">
+              {isSyncingCloud ? 'Sinkron...' : 'Sinkron'}
+            </span>
+          </button>
+        ) : onOpenDatabaseTab ? (
+          <button
+            type="button"
+            onClick={onOpenDatabaseTab}
+            className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-2 rounded-lg text-xs font-semibold text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-200 transition-colors cursor-pointer whitespace-nowrap"
+            title="Hubungkan Google Sheets agar Sinkron HP & PC"
+          >
+            <Database className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+            <span className="hidden xl:inline">Hubungkan Sheets</span>
+          </button>
+        ) : null}
+
         <button
           type="button"
           onClick={onQuickRecordPayment}
